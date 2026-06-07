@@ -1,0 +1,31 @@
+{"node": "load_sitemap", "msg": "Starting. sitemap_url=https://muroran-it.ac.jp/sitemap/"}
+{"node": "load_sitemap", "msg": "Found 297 URLs in sitemap"}
+{"node": "filter_urls", "msg": "Total URLs to filter: 297"}
+{"node": "filter_urls", "msg": "Keyword pre-filter: 21 / 297"}
+{"node": "filter_urls", "msg": "Batch 1: LLM selected 5 URLs"}
+{"node": "filter_urls", "msg": "Total candidates after LLM filter: 5"}
+{"node": "find_navigation", "msg": "Found 5 navigation pages"}
+{"node": "discover_subsites", "msg": "https://muroran-it.ac.jp/entrance/admission/: found 2 subsites"}
+{"node": "discover_subsites", "msg": "https://muroran-it.ac.jp/campuslife/study_sup/: found 2 subsites"}
+{"node": "discover_subsites", "msg": "https://muroran-it.ac.jp/academic/gs/: found 2 subsites"}
+{"node": "discover_subsites", "msg": "https://muroran-it.ac.jp/society/ciulg_rc/: found 2 subsites"}
+{"node": "discover_subsites", "msg": "https://muroran-it.ac.jp/international/international/: found 2 subsites"}
+{"node": "discover_subsites", "msg": "Total subsites: 8"}
+{"node": "crawl_pages", "msg": "Crawling 5 pages"}
+{"node": "crawl_pages", "msg": "Crawled 4 pages, found 0 PDFs so far"}
+{"node": "process_subsites", "msg": "Processing 8 subsites"}
+{"node": "process_subsites", "msg": "Processing subsite: 大学院研究科一覧 → https://muroran-it.ac.jp/daigakuin/gsee/"}
+{"node": "process_subsites", "msg": "Processing subsite: 各学部サイト → https://muroran-it.ac.jp/entrance/admission/about/details/"}
+{"node": "process_subsites", "msg": "Processing subsite: 大学院 → https://muroran-it.ac.jp/academic/"}
+{"node": "process_subsites", "msg": "Processing subsite: 理工学部 → https://muroran-it.ac.jp/academic/technology/"}
+{"node": "process_subsites", "msg": "Processing subsite: 理工学部 → https://muroran-it.ac.jp/academic/techno"}
+{"node": "process_subsites", "msg": "Processing subsite: 大学院 → https://muroran-it.ac.jp/academic/gs"}
+{"node": "process_subsites", "msg": "After subsites: 0 total PDFs"}
+{"node": "crawl_follow", "msg": "Following 1 links"}
+{"node": "crawl_follow", "msg": "Direct PDF extract: 9 from https://muroran-it.ac.jp/entrance/admission/exam/uee/"}
+{"node": "crawl_follow", "msg": "After follow: 9 total PDFs"}
+{"node": "audit", "msg": "Round 1: auditing completeness"}
+{"node": "audit", "msg": "Complete=False, Missing=[], Note=収集された情報は不足しています。具体的な研究科ごとの募集要項が見つかりませんでした。"}
+{"node": "audit", "msg": "Round 2: auditing completeness"}
+{"node": "audit", "msg": "Complete=False, Missing=[], Note=収集された情報は不足しています。具体的な研究科ごとの募集要項が見つかりませんでした。"}
+{"node": "finalize", "msg": "Final PDF count: 9"}

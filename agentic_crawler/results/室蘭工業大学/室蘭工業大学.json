@@ -1,0 +1,150 @@
+{
+  "school": "室蘭工業大学",
+  "official_url": "https://www.muroran-it.ac.jp/index-j.html",
+  "domain": "muroran-it.ac.jp",
+  "sitemap_url": "https://muroran-it.ac.jp/sitemap/",
+  "candidate_pages": [
+    "https://muroran-it.ac.jp/daigakuin/gs_dp/",
+    "https://muroran-it.ac.jp/entrance/admission/exam/",
+    "https://e-apply.jp/ds/muroran-it-u/",
+    "https://muroran-it.ac.jp/daigakuin/gs_mp/",
+    "https://muroran-it.ac.jp/entrance/admission/"
+  ],
+  "discovered_subsites": [
+    {
+      "name": "大学院研究科一覧",
+      "url": "https://muroran-it.ac.jp/daigakuin/gsee/",
+      "is_different_domain": false,
+      "category": "graduate"
+    },
+    {
+      "name": "各学部サイト",
+      "url": "https://muroran-it.ac.jp/entrance/admission/about/details/",
+      "is_different_domain": false,
+      "category": "undergraduate"
+    },
+    {
+      "name": "理工学部",
+      "url": "https://muroran-it.ac.jp/campuslife/study_sup/",
+      "is_different_domain": false,
+      "category": "undergraduate"
+    },
+    {
+      "name": "大学院",
+      "url": "https://muroran-it.ac.jp/academic/",
+      "is_different_domain": false,
+      "category": "graduate"
+    },
+    {
+      "name": "理工学部",
+      "url": "https://muroran-it.ac.jp/academic/technology/",
+      "is_different_domain": false,
+      "category": "undergraduate"
+    },
+    {
+      "name": "大学院",
+      "url": "https://muroran-it.ac.jp/academic/gs/",
+      "is_different_domain": false,
+      "category": "graduate"
+    },
+    {
+      "name": "理工学部",
+      "url": "https://muroran-it.ac.jp/academic/techno",
+      "is_different_domain": false,
+      "category": "undergraduate"
+    },
+    {
+      "name": "大学院",
+      "url": "https://muroran-it.ac.jp/academic/gs",
+      "is_different_domain": false,
+      "category": "graduate"
+    }
+  ],
+  "pdfs": [
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/06/2026gaikokujin-henkou-1.pdf",
+      "text": "令和8年度（令和7年度試験実施）総合型選抜における（私費外国人留学生）の出願要件変更について（予告）",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2024/10/令和9年度（2027年度）総合型選抜（中国引揚等子女）の募集停止（予告）について.pdf",
+      "text": "令和9年度（2027年度）総合型選抜（中国引揚等子女）の募集停止（予告）について",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2024/07/R8yokoku.pdf",
+      "text": "令和8年度（2026年度）大学入学者選抜に係る個別学力検査等の出題範囲の公表について（予告）",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/07/R08nyugakusyagaiyou.pdf.pdf",
+      "text": "令和8年度入学試験概要（入学者選抜要項）",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/10/R8ippanyoukou.pdf",
+      "text": "令和8年度一般選抜学生募集要項",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/10/R8gakkousuisennyoukou.pdf",
+      "text": "令和8年度学校推薦型選抜学生募集要項",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/08/R8_sougo_bosyu.pdf",
+      "text": "令和8年度総合型選抜学生募集要項",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2025/09/2026tokubetsu.pdf",
+      "text": "令和8年度総合型選抜（帰国子女・中国引揚者等子女・社会人・企業推薦型）学生募集要項",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    },
+    {
+      "url": "https://muroran-it.ac.jp/uploads/sites/6/2026/01/2026shihiyoukou.pdf",
+      "text": "2026年度総合型選抜（私費外国人留学生）学生募集要項",
+      "category": "不明",
+      "year": "",
+      "department": "",
+      "admission_type": "不明",
+      "source_page": "https://muroran-it.ac.jp/entrance/admission/exam/uee/"
+    }
+  ],
+  "found_departments": [],
+  "missing_departments": [],
+  "is_complete": false,
+  "errors": []
+}
