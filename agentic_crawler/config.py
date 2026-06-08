@@ -12,15 +12,13 @@ import os
 from pathlib import Path
 
 # ── API Keys (从环境变量读取，也可直接填字符串) ──────────────────────────
-PORTKEY_API_KEY: str         = os.getenv("PORTKEY_API_KEY", "")
-PORTKEY_VIRTUAL_KEY_GEMINI: str = os.getenv("PORTKEY_VIRTUAL_KEY_GEMINI", "")
-PORTKEY_VIRTUAL_KEY_CLAUDE: str = os.getenv("PORTKEY_VIRTUAL_KEY_CLAUDE", "")
+PORTKEY_API_KEY: str         = os.getenv("PORTKEY_API_KEY", "mnXWDHL9j0ntMnBPhfY6Fd9D8pP/")
 TAVILY_API_KEY: str          = os.getenv("TAVILY_API_KEY", "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")
 
 # ── LLM バックエンド切り替え ─────────────────────────────────────────
 # "ollama"   → ローカル Ollama（自宅・オフライン環境）
 # "portkey"  → 会社の Portkey ゲートウェイ（Gemini / Claude）
-LLM_BACKEND: str = "ollama"   # ← ここを切り替えるだけ
+LLM_BACKEND: str = "portkey"   # ← ここを切り替えるだけ
 
 # ── Ollama 設定（ローカル） ────────────────────────────────────────────
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
@@ -28,8 +26,8 @@ OLLAMA_PRIMARY_MODEL: str = "qwen2.5:7b"  # qwen3 hangs on Ollama 0.23.2/M2 Pro;
 
 # ── Portkey 設定（会社） ──────────────────────────────────────────────
 # 会社で使う場合: LLM_BACKEND = "portkey" に変えるだけ
-PORTKEY_PRIMARY_MODEL: str = "@vertexai-global/gemini-2.5-flash"
-PORTKEY_EXTRACT_MODEL: str = "claude-sonnet-4-5"
+PORTKEY_PRIMARY_MODEL: str = "@openai-eastus2/gpt-5.5"
+PORTKEY_EXTRACT_MODEL: str = "@anthropic-eastus2/claude-opus-4-8"
 
 # ── 実行時に使われるモデル（バックエンドに応じて自動選択）─────────────
 PRIMARY_MODEL: str = OLLAMA_PRIMARY_MODEL if LLM_BACKEND == "ollama" else PORTKEY_PRIMARY_MODEL

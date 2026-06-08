@@ -64,15 +64,18 @@ def main():
     raw = graph.invoke(initial_state)
     final_state = ReactState(**raw) if isinstance(raw, dict) else raw
 
-    # 結果表示
+        # 結果表示（Windows cp932 で表示できない文字を ? に置換）
+    def safe_print(text: str):
+        print(text.encode(sys.stdout.encoding or 'utf-8', errors='replace').decode(sys.stdout.encoding or 'utf-8', errors='replace'))
+
     pdfs = final_state.collected_pdfs
-    print(f"\n{'='*60}")
-    print(f"  結果: {len(pdfs)} 件の PDF を収集（ReAct Agent）")
-    print(f"  ステップ数: {final_state.step_count}")
-    print(f"{'='*60}")
+    safe_print(f"\n{'='*60}")
+    safe_print(f"  結果: {len(pdfs)} 件の PDF を収集（ReAct Agent）")
+    safe_print(f"  ステップ数: {final_state.step_count}")
+    safe_print(f"{'='*60}")
     for p in pdfs:
-        print(f"  {p.get('text', '?')[:60]}")
-        print(f"    → {p.get('url', '')}")
+        safe_print(f"  {p.get('text', '?')[:60]}")
+        safe_print(f"    → {p.get('url', '')}")
 
     # JSON 保存
     out_dir = Path(__file__).parent / "results" / args.school

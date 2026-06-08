@@ -32,10 +32,11 @@ from agent.react.tools import AGENT_TOOLS, _is_relevant_pdf
 from tools.fetcher import extract_pdf_links_from_markdown, fetch_page_as_markdown
 from tools.sitemap_parser import discover_sitemap
 from tools.tavily_search import tavily_search
+from tools.pdf_extractor import enrich_pdf_list
 from config import (
     LLM_BACKEND,
     OLLAMA_BASE_URL, OLLAMA_PRIMARY_MODEL,
-    PORTKEY_API_KEY, PORTKEY_VIRTUAL_KEY_GEMINI, PORTKEY_PRIMARY_MODEL,
+    PORTKEY_API_KEY, PORTKEY_PRIMARY_MODEL,
     ADMISSION_KEYWORDS_JA,
 )
 
@@ -122,18 +123,15 @@ def _make_llm():
             base_url="https://api.portkey.ai/v1",
             api_key=PORTKEY_API_KEY,
             model=PORTKEY_PRIMARY_MODEL,
-            temperature=0.0,
-            max_tokens=4096,
             default_headers={
                 "x-portkey-api-key": PORTKEY_API_KEY,
-                "x-portkey-virtual-key": PORTKEY_VIRTUAL_KEY_GEMINI,
             },
         )
 
 
-def _make_system_prompt(school_name: str) -> str:
-    return f"""/no_think
-あなたは日本の大学入試情報収集の補完エージェントです。必ず日本語で回答してください。
+def _make_system_prompt(school_name: str, use_no_think: bool = False) -> str:
+    prefix = "/no_think\n" if use_no_think else ""
+    return prefix + f"""あなたは日本の大学入試情報収集の補完エージェントです。必ず日本語で回答してください。
 
 【状況】
 「{school_name}」の入試関連ページは既にスキャン済みです。
@@ -270,9 +268,9 @@ def node_agent(state: ReactState) -> dict:
         pdf_summary = "\n".join(
             f"  - {p['text'][:40]}: {p['url']}"
             for p in state.collected_pdfs[:20]
-        ) or "  （なし）"
+                ) or "  （なし）"
         messages = [
-            SystemMessage(content=_make_system_prompt(state.school_name)),
+            SystemMessage(content=_make_system_prompt(state.school_name, use_no_think=(LLM_BACKEND == "ollama"))),
             HumanMessage(content=(
                 f"「{state.school_name}」の確定的スキャンで以下の PDF が収集済みです:\n{pdf_summary}\n\n"
                 f"学部・大学院の募集要項が揃っているか確認し、不足があれば search_web で補完してください。"
@@ -362,6 +360,14 @@ def node_collect_pdfs_from_tool_results(state: ReactState) -> dict:
     return {"collected_pdfs": new_pdfs}
 
 
+def node_enrich_pdfs(state: ReactState) -> dict:
+    """全 PDF の text フィールドを PDF 内タイトルで強化する（方案B: 全量抽取）"""
+    logger.info(f"[{state.school_name}] Enriching {len(state.collected_pdfs)} PDFs with PDF titles...")
+    enriched = enrich_pdf_list(state.collected_pdfs, min_text_len=0)
+    logger.info(f"[{state.school_name}] PDF enrichment done.")
+    return {"collected_pdfs": enriched}
+
+
 def node_finalize(state: ReactState) -> dict:
     logger.info(f"[{state.school_name}] Finalized. Total PDFs: {len(state.collected_pdfs)}")
     return {}
@@ -387,6 +393,7 @@ def build_react_graph():
     builder.add_node("agent", node_agent)
     builder.add_node("tools", tools_node)
     builder.add_node("collect_pdfs", node_collect_pdfs_from_tool_results)
+    builder.add_node("enrich_pdfs", node_enrich_pdfs)
     builder.add_node("finalize", node_finalize)
 
     builder.set_entry_point("prepare")
@@ -394,13 +401,11 @@ def build_react_graph():
     builder.add_edge("fetch_candidates", "agent")
     builder.add_conditional_edges("agent", _should_continue, {
         "tools": "tools",
-        "finalize": "finalize",
+        "finalize": "enrich_pdfs",
     })
     builder.add_edge("tools", "collect_pdfs")
     builder.add_edge("collect_pdfs", "agent")
+    builder.add_edge("enrich_pdfs", "finalize")
     builder.add_edge("finalize", END)
 
     return builder.compile()
-
-
-

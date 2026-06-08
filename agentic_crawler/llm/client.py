@@ -24,8 +24,6 @@ from config import (
     OLLAMA_BASE_URL,
     # Portkey
     PORTKEY_API_KEY,
-    PORTKEY_VIRTUAL_KEY_GEMINI,
-    PORTKEY_VIRTUAL_KEY_CLAUDE,
     PORTKEY_PRIMARY_MODEL,
     PORTKEY_EXTRACT_MODEL,
     OLLAMA_PRIMARY_MODEL,
@@ -49,12 +47,11 @@ def _make_ollama_client() -> OpenAI:
     )
 
 
-def _make_portkey_client(virtual_key: str):
+def _make_portkey_client():
     """会社 Portkey ゲートウェイ"""
     from portkey_ai import Portkey
     return Portkey(
         api_key=PORTKEY_API_KEY,
-        virtual_key=virtual_key,
     )
 
 
@@ -67,9 +64,9 @@ def _get_client_and_model(model_role: str = "primary"):
         return _make_ollama_client(), OLLAMA_PRIMARY_MODEL
 
     # portkey
-    if model_role == "extract" and PORTKEY_VIRTUAL_KEY_CLAUDE:
-        return _make_portkey_client(PORTKEY_VIRTUAL_KEY_CLAUDE), PORTKEY_EXTRACT_MODEL
-    return _make_portkey_client(PORTKEY_VIRTUAL_KEY_GEMINI), PORTKEY_PRIMARY_MODEL
+    if model_role == "extract":
+        return _make_portkey_client(), PORTKEY_EXTRACT_MODEL
+    return _make_portkey_client(), PORTKEY_PRIMARY_MODEL
 
 
 # ── 共通呼び出し ────────────────────────────────────────────────────
