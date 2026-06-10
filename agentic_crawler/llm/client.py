@@ -27,6 +27,11 @@ from config import (
     PORTKEY_PRIMARY_MODEL,
     PORTKEY_EXTRACT_MODEL,
     OLLAMA_PRIMARY_MODEL,
+    # OpenAI 互換
+    OPENAI_COMPAT_BASE_URL,
+    OPENAI_COMPAT_API_KEY,
+    OPENAI_COMPAT_PRIMARY_MODEL,
+    OPENAI_COMPAT_EXTRACT_MODEL,
     # 共通
     LLM_SLEEP,
     MAX_RETRY,
@@ -55,6 +60,14 @@ def _make_portkey_client():
     )
 
 
+def _make_openai_compat_client() -> OpenAI:
+    """OpenAI 互換 API（JV Vortex / 任意のゲートウェイ）"""
+    return OpenAI(
+        base_url=OPENAI_COMPAT_BASE_URL,
+        api_key=OPENAI_COMPAT_API_KEY,
+    )
+
+
 def _get_client_and_model(model_role: str = "primary"):
     """
     バックエンドに応じてクライアントとモデル ID を返す。
@@ -62,6 +75,11 @@ def _get_client_and_model(model_role: str = "primary"):
     """
     if LLM_BACKEND == "ollama":
         return _make_ollama_client(), OLLAMA_PRIMARY_MODEL
+
+    if LLM_BACKEND == "openai_compat":
+        if model_role == "extract":
+            return _make_openai_compat_client(), OPENAI_COMPAT_EXTRACT_MODEL
+        return _make_openai_compat_client(), OPENAI_COMPAT_PRIMARY_MODEL
 
     # portkey
     if model_role == "extract":
@@ -81,22 +99,38 @@ def llm_call(
     """テキスト生成。失敗時はリトライ。"""
     client, model_id = _get_client_and_model(model_role)
 
-    # Qwen3 の thinking モードを無効化（/no_think をシステムプロンプトに付加）
-    # thinking モードはトークンを大量消費してタイムアウトの原因になる
+        # Qwen3 の thinking モードを無効化（/no_think をシステムプロンプトに付加）
     if LLM_BACKEND == "ollama":
         system = "/no_think\n" + system
 
+    # 部分模型参数兼容性处理：
+    #   - Claude opus-4 / o1 / o3 / o4 系列：不支持 temperature
+    #   - GPT-5 / o1 / o3 / o4 系列（Azure OpenAI）：用 max_completion_tokens 而非 max_tokens
+    #   - Claude Sonnet / Haiku 等：支持标准参数，无需特殊处理
+    _NO_TEMPERATURE_MODELS = ["claude-opus-4", "claude-opus", "o1", "o3", "o4"]
+    _MAX_COMPLETION_TOKENS_MODELS = ["gpt-5", "o1", "o3", "o4"]
+    _NORMAL_MODELS = ["claude-sonnet", "claude-haiku", "claude-3"]
+    is_normal = any(kw in model_id for kw in _NORMAL_MODELS)
+    skip_temperature = (not is_normal) and any(kw in model_id for kw in _NO_TEMPERATURE_MODELS)
+    use_max_completion_tokens = (not is_normal) and any(kw in model_id for kw in _MAX_COMPLETION_TOKENS_MODELS)
+
     for attempt in range(1, MAX_RETRY + 1):
         try:
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=[
+            create_kwargs = {
+                "model": model_id,
+                "messages": [
                     {"role": "system", "content": system},
                     {"role": "user",   "content": prompt},
                 ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            }
+            if use_max_completion_tokens:
+                create_kwargs["max_completion_tokens"] = max_tokens
+            else:
+                create_kwargs["max_tokens"] = max_tokens
+            if not skip_temperature:
+                create_kwargs["temperature"] = temperature
+
+            response = client.chat.completions.create(**create_kwargs)
             time.sleep(LLM_SLEEP)
             return response.choices[0].message.content or ""
         except Exception as e:

@@ -16,22 +16,35 @@ PORTKEY_API_KEY: str         = os.getenv("PORTKEY_API_KEY", "mnXWDHL9j0ntMnBPhfY
 TAVILY_API_KEY: str          = os.getenv("TAVILY_API_KEY", "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")
 
 # ── LLM バックエンド切り替え ─────────────────────────────────────────
-# "ollama"   → ローカル Ollama（自宅・オフライン環境）
-# "portkey"  → 会社の Portkey ゲートウェイ（Gemini / Claude）
-LLM_BACKEND: str = "portkey"   # ← ここを切り替えるだけ
+# "ollama"     → ローカル Ollama（自宅・オフライン環境）
+# "portkey"    → 会社の Portkey ゲートウェイ（旧）
+# "openai_compat" → OpenAI 互換 API（Vortex / JV ゲートウェイ等）
+LLM_BACKEND: str = "openai_compat"   # ← ここを切り替えるだけ
 
 # ── Ollama 設定（ローカル） ────────────────────────────────────────────
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-OLLAMA_PRIMARY_MODEL: str = "qwen2.5:7b"  # qwen3 hangs on Ollama 0.23.2/M2 Pro; update Ollama to use qwen3
+OLLAMA_PRIMARY_MODEL: str = "qwen2.5:7b"
 
-# ── Portkey 設定（会社） ──────────────────────────────────────────────
-# 会社で使う場合: LLM_BACKEND = "portkey" に変えるだけ
+# ── Portkey 設定（旧・会社） ──────────────────────────────────────────
 PORTKEY_PRIMARY_MODEL: str = "@openai-eastus2/gpt-5.5"
 PORTKEY_EXTRACT_MODEL: str = "@anthropic-eastus2/claude-opus-4-8"
 
+# ── OpenAI 互換 API 設定（JV Vortex ゲートウェイ）────────────────────
+OPENAI_COMPAT_BASE_URL: str = os.getenv("OPENAI_COMPAT_BASE_URL", "https://ai-jv.vortex.sandisk.com/v1/")
+OPENAI_COMPAT_API_KEY: str  = os.getenv("OPENAI_COMPAT_API_KEY",  "ogra2rsr2PawhIAoDNSiVI5jNMel")
+OPENAI_COMPAT_PRIMARY_MODEL: str = os.getenv("OPENAI_COMPAT_PRIMARY_MODEL", "@bedrock-uswest2/us.anthropic.claude-sonnet-4-6")
+OPENAI_COMPAT_EXTRACT_MODEL: str = os.getenv("OPENAI_COMPAT_EXTRACT_MODEL", "@bedrock-uswest2/us.anthropic.claude-sonnet-4-6")
+
 # ── 実行時に使われるモデル（バックエンドに応じて自動選択）─────────────
-PRIMARY_MODEL: str = OLLAMA_PRIMARY_MODEL if LLM_BACKEND == "ollama" else PORTKEY_PRIMARY_MODEL
-EXTRACT_MODEL: str = OLLAMA_PRIMARY_MODEL if LLM_BACKEND == "ollama" else PORTKEY_EXTRACT_MODEL
+if LLM_BACKEND == "ollama":
+    PRIMARY_MODEL: str = OLLAMA_PRIMARY_MODEL
+    EXTRACT_MODEL: str = OLLAMA_PRIMARY_MODEL
+elif LLM_BACKEND == "openai_compat":
+    PRIMARY_MODEL: str = OPENAI_COMPAT_PRIMARY_MODEL
+    EXTRACT_MODEL: str = OPENAI_COMPAT_EXTRACT_MODEL
+else:  # portkey
+    PRIMARY_MODEL: str = PORTKEY_PRIMARY_MODEL
+    EXTRACT_MODEL: str = PORTKEY_EXTRACT_MODEL
 
 # ── 路径 ────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
