@@ -2,7 +2,7 @@
 
 > **用途**：本文档面向 AI Agent（或新加入的开发者），用于在每次新 Session 开始时快速恢复项目上下文。  
 > **维护原则**：每次有功能变更、调试结论、阶段推进时，请同步更新本文档对应章节。  
-> **最后更新**：2025-07
+> **最后更新**：2026-06
 
 ---
 
@@ -15,10 +15,11 @@
 5. [第一阶段：强规则爬虫（Baseline）](#5-第一阶段强规则爬虫baseline)
 6. [第二阶段：LLM Agentic 语义爬虫（ReAct）](#6-第二阶段llm-agentic-语义爬虫react)
 7. [第三阶段：Ground Truth 驱动爬取（当前主线）](#7-第三阶段ground-truth-驱动爬取当前主线)
-8. [当前进度与待办事项](#8-当前进度与待办事项)
-9. [已知问题与注意事项](#9-已知问题与注意事项)
-10. [快速启动命令速查](#10-快速启动命令速查)
-11. [更新日志](#11-更新日志)
+8. [第四阶段：RAG データ準備（計画中）](#8-第四阶段rag-データ準備計画中)
+9. [当前进度与待办事项](#9-当前进度与待办事项)
+10. [已知问题与注意事项](#10-已知问题与注意事项)
+11. [快速启动命令速查](#11-快速启动命令速查)
+12. [更新日志](#12-更新日志)
 
 ---
 
@@ -153,7 +154,7 @@
 | `content_hash` | TEXT | SHA-256，用于检测内容是否变化 |
 | `pdf_scope` | TEXT | `'undergraduate'`/`'graduate'`/`'combined'` |
 | `academic_year` | TEXT | 学年度，如 `'令和7年度'` |
-| `extracted_units` | JSONB | LLM 提取的结构化结果（存档） |
+| `extracted_units` | JSONB | LLM 提取的结构化结果（存档），含 `covered_units`、`notes`、`confidence` 等字段 |
 
 #### `pdf_unit_coverage`（PDF-Unit 多对多关系表）
 
@@ -336,7 +337,56 @@ match_save ────┴─────────────┘────
 
 ---
 
-## 8. 当前进度与待办事项
+---
+
+## 8. 第四阶段：RAG データ準備（計画中）
+
+### 状態：📋 設計完了・実装待ち
+
+### 前提条件
+Phase 3 の全量爬取（国公私立大学）が完了し、`crawled_pdfs` に十分な PDF リンクとメタデータが蓄積されていること。
+
+### 核心思路
+Phase 3 で付与した **`大学名 × 学部名 × 年度 × スコープ`** の 4 軸メタデータを RAG のフィルタリング基盤として活用し、汎用 RAG では実現できないドメイン特化の高精度検索を実現する。
+
+### 4 レイヤー構成
+
+| レイヤー | 内容 | 優先度 |
+|---------|------|--------|
+| Layer 1 | **メタデータフィルタリング**（Phase 3 資産の直接活用） | ⭐⭐⭐ 最優先 |
+| Layer 2 | **Hybrid Search**（BM25 + pgvector、RRF 統合） | ⭐⭐ |
+| Layer 3 | **Reranking**（CrossEncoder） | ⭐ |
+| Layer 4 | **LLM 回答生成**（出典明示付き） | — |
+
+### 実装ロードマップ
+
+```
+Phase 4A：PDF 全文構造化
+  └── pdfplumber extract_tables() 併用（表格 Markdown 化）
+  └── 見出し検出 → セクション分割
+  └── スキャン PDF OCR フォールバック（pytesseract）
+
+Phase 4B：Contextual Chunking
+  └── chunk 生成（500〜800字、見出し境界優先）
+  └── LLM で context 付与（Anthropic Contextual Retrieval 手法）
+  └── メタデータ付与（大学名/学部/年度/入試方式/セクションパス）
+
+Phase 4C：Vector Store 構築
+  └── Embedding：multilingual-e5-large（日本語対応・無料）
+  └── BM25 インデックス（sudachi 形態素解析）
+  └── ストレージ：Supabase pgvector（既存 DB と統合）
+
+Phase 4D：Retrieval Pipeline
+  └── Query Understanding（LLM でクエリ → 検索条件抽出）
+  └── メタデータフィルタ → Hybrid Search → Rerank → LLM
+  └── 回答に出典 URL・ページ番号を付与
+```
+
+> 詳細設計：`docs/phase4_rag_strategy.md` 参照
+
+---
+
+## 9. 当前进度与待办事项
 
 ### ✅ 已完成
 - [x] 第一阶段强规则爬虫（run_single + run_batch）
@@ -355,23 +405,43 @@ match_save ────┴─────────────┘────
 - [x] **Phase3 精准搜索改进**：基于 Ground Truth 学部/研究科名生成精准 Tavily 查询，目标域名自动推断并优先排序
 - [x] **Phase3 相关性过滤改进（借鉴 Phase2）**：新增 `node_filter_url` 节点，规则过滤第三方平台/无关文档，LLM 判断模糊 URL
 - [x] **效果验证**：北見工業大学覆盖率 71%→100%，处理 PDF 数 11→6，耗时 452s→140s（节省69%）
+- [x] **国立大学全量爬取启动**：82所国立大学批量爬取任务已在后台运行（2026-06-11）
+- [x] **pdf_extractor.py MAX_TEXT_CHARS 调整**：12,000字 → 30,000字，提升超大 PDF 覆盖率
+- [x] **Phase 4 RAG 战略文档**：`docs/phase4_rag_strategy.md` 设计完成
 
 ### 🔄 进行中 / 待做
+- [ ] **国立大学全量爬取**：82所国立大学后台运行中，预计完成后覆盖率报告将显著提升
+- [ ] **全量批量爬取（公立・私立）**：国立完成后继续推进公立（99所）、私立（600+所）
 - [ ] **数据质量问题**：文科省 Excel 含历史旧学部名（如工学部/理工学部并存），需清理或在 unit_matcher 中加入别名映射
-- [ ] **全量批量爬取**：稳定后对全国大学执行 `crawl --limit N` 批量爬取
 - [ ] **扩大测试范围**：选取国立/公立/私立各类型大学各5所，验证不同网站结构下的稳定性
+- [ ] **Phase 3 完了後データクリーニング**（Phase 4 着手前に必須）：
+  - `crawled_pdfs.academic_year` を `extracted_units` 内の実際の年度で上書き更新（SQL 1発）
+  - 平成年度など明らかな旧文書を `is_outdated=true` フラグで除外
+  - covered_units が空の82件を調査・再処理または除外フラグ付与
+  - 茨城大学など PDF 数が異常に多い大学の重複確認
+- [ ] **Phase 4A**：PDF 全文结构化（extract_tables 并用、见出し检测、扫描 PDF OCR 对応）
+- [ ] **Phase 4B**：Contextual Chunking 实装
+- [ ] **Phase 4C**：Vector Store 构建（multilingual-e5-large + Supabase pgvector）
+- [ ] **Phase 4D**：Retrieval Pipeline 实装（Hybrid Search + Rerank + LLM 回答生成）
 
 ### 🚧 已知难点
 - 日本高校网站高度异构，部分大学无规整 Sitemap
 - 部分大学募集要项 PDF 存放于子域名或第三方平台
-- LLM Token 消耗需控制（`pdf_extractor.py` 已限制 12,000 字符截断）
+- LLM Token 消耗需控制（`pdf_extractor.py` 已调整至 30,000 字符截断）
 - 私立大学数量庞大（8 册 Excel），全量爬取耗时可能较长
 - **文科省 Excel 数据质量**：部分大学存在新旧学部名并存问题（如室蘭工業大学：工学部→理工学部改制），导致 ground truth 不准确，覆盖率虚低
 - **Tavily 搜索域名污染**：搜索结果会混入其他大学的 PDF，当前无域名过滤，需后续加入大学官网域名白名单
+- **扫描 PDF（文字数=0）**：`extract_text()` 返回空字符串，现阶段直接跳过，Phase 4A 中需 OCR 对応
+- **notes 字段可靠性**：`extracted_units.notes` 中的否定性判断（「〇〇の記載なし」）仅基于截断后文本，不代表 PDF 全文
+- **academic_year 硬编码问题**：`crawled_pdfs.academic_year` 字段因 Prompt 模板硬编码全部写入「令和7年度」；`extracted_units` 内部实际读取年度分布显示约49%的PDF并非令和7年度（令和8年度297件、令和9年度67件、历史旧文档等）。Prompt 已修复（下次启动生效），已有数据需 Phase 3 完成后补跑清洗
+- **历史旧文档混入**：爬取结果中含平成27年度（2015年）等历史文档，RAG 检索时会干扰结果，Phase 4 前需按年度过滤
+- **部分大学 PDF 数量异常偏多**：茨城大学54件（正常5~15件），可能因各専攻独立PDF + 历史年度文档叠加，需调查
+- **covered_units 空的 PDF**：82件（8.8%）LLM 提取结果为空，原因为扫描版 PDF 或非募集要項类文档
+- **低 confidence 匹配**：pdf_unit_coverage 中 medium+low 合计占23.6%（922件），对 RAG 精度有潜在影响
 
 ---
 
-## 9. 已知问题与注意事项
+## 10. 已知问题与注意事项
 
 ### 环境配置
 - 需要在项目根目录创建 `.env` 文件，包含以下变量：
@@ -392,7 +462,7 @@ match_save ────┴─────────────┘────
 | **Windows 编码** | 部分脚本有 `cp932` 日文字符编码处理，Windows 环境需注意；测试脚本需在开头加 `sys.stdout.reconfigure(encoding='utf-8')` |
 | **反爬限制** | 批量爬取建议 `--max-workers 1~2`，避免触发高校服务器反爬 |
 | **Excel 结构变化** | 文科省每年 Excel 列结构可能微调，`mext_excel_parser.py` 已有自适应表头识别 |
-| **PDF 内容截断** | `pdf_extractor.py` 限制最大 12,000 字符，超长 PDF 自动截断送 LLM |
+| **PDF 内容截断** | `pdf_extractor.py` 限制最大 30,000 字符（已从12,000调整），超长 PDF 自动截断送 LLM |
 | **LLM 客户端** | `crawl_graph.py` 复用 `agentic_crawler/llm/client.py` 的 `llm_call`，LLM 后端切换在 `agentic_crawler/config.py` 中统一控制 |
 | **Claude temperature** | `agentic_crawler/llm/client.py` 已修复：含 `claude-opus`/`o1`/`o3` 的模型自动跳过 temperature 参数 |
 | **第三阶段 venv** | 第三阶段必须使用项目根目录的 `.venv`，已安装：pdfplumber、rapidfuzz、supabase、python-dotenv、tavily-python、beautifulsoup4 |
@@ -406,7 +476,7 @@ match_save ────┴─────────────┘────
 
 ---
 
-## 10. 快速启动命令速查
+## 11. 快速启动命令速查
 
 ### 第三阶段（当前主线）
 
@@ -451,7 +521,7 @@ python run_batch.py --types national public
 
 ---
 
-## 11. 更新日志
+## 12. 更新日志
 
 | 日期 | 更新内容 |
 |------|----------|
@@ -459,5 +529,8 @@ python run_batch.py --types national public
 | 2025-07 | **crawl_graph 调试完成**：修复 LLM 客户端（改用 Portkey 统一封装）、修复 temperature 参数兼容性（Claude opus-4 不支持）、修复 bytes 存 State 内存问题、安装缺失依赖（pdfplumber/rapidfuzz/supabase）。端到端测试通过：室蘭工業大学 23 PDF 全部下载+提取+写库，exact 精确匹配，SHA-256 去重正常。遗留：文科省 Excel 含历史旧学部名（工学部/理工学部并存），属数据质量问题非代码 Bug。 |
 | 2025-07 | **CLI 入口验证完成**：`run_phase3.py crawl` 和 `report` 子命令全部通过。室蘭工業大学(60%)、北見工業大学(71%)正常爬取。注意：全局参数（`--log-level`等）必须放在子命令名称之前。 |
 | 2025-07 | **Phase3 重大改进**：①精准搜索——基于 Ground Truth 学部/研究科名生成精准查询，目标域名自动推断优先排序；②相关性过滤——新增 `node_filter_url` 节点，规则过滤 janu.jp/benesse/keinet/dnc.ac.jp 等无关域名，LLM 判断模糊URL；③LLM 后端切换至 JV Vortex（Claude Sonnet 4，OpenAI 兼容接口）并修复 llm_call 缩进 bug；验证结果：北見工業大学覆盖率 71%→100%，耗时节省 69%。 |
+| 2026-06 | **国立大学全量爬取启动**：82所国立大学批量任务在后台运行，初步结果显示上越教育大学/北見工業大学/滋賀医科大学/電気通信大学/浜松医科大学等覆盖率100%，北海道大学38.5%（截断问题）。`MAX_TEXT_CHARS` 从12,000调整至30,000。确认 `extracted_units` 为LLM从截断后PDF文本中提取的结构化数据，`notes` 字段的否定性判断不可过度依赖。 |
+| 2026-06 | **Phase 4 RAG 战略设计完成**：新增 `docs/phase4_rag_strategy.md`，明确4层RAG架构（元数据过滤→Hybrid Search→Rerank→LLM生成），确定 Contextual Chunking + Supabase pgvector + multilingual-e5-large 技术选型，优先级排序完成。PROJECT_PROGRESS.md 新增第四阶段章节，目录序号全部更新。 |
+| 2026-06 | **数据质量检查完成（国立大学爬取进行中，930件）**：①`academic_year` 全件硬编码为「令和7年度」（实际约49%为其他年度）→ Prompt 已修复；②历史旧文档（平成27年度等）混入；③82件 covered_units 为空；④茨城大学 PDF 数异常（54件）；⑤低 confidence 匹配占23.6%。pdf_unit_coverage 3,907件中 exact 匹配97%、high confidence 76.4%，整体匹配质量良好。待办新增「Phase 3完了後データクリーニング」。 |
 
 > **维护提示**：每次完成一个子任务或发现重要问题，请在此表格追加一行记录，并同步更新第 8 节的进度列表。

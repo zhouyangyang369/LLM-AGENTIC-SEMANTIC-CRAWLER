@@ -77,6 +77,21 @@ _URL_EXCLUDE_PATTERNS: list[str] = [
     "janu.jp", "keinet.ne.jp", "benesse", "kawaijuku",
     "mynavi", "rikunabi", "passnavi", "keiyu",
     "kobekyo.com", "nyushi.yahoo",
+    # 过去問・採点基準・面接評価（募集要項ではなく試験関連資料）
+    "kakomon", "mondai", "kaito", "saitenkijyun", "saiten_kijun",
+    "mensetsu", "hyouka", "hyoka", "mensetu",
+    "syoronbun", "shoronbun", "ronbun_hyousi",
+    # 入学後の資料（入学者向け、受験生向けではない）
+    "nyugakugo", "nyuugakugo", "nyugakusha_gaiyou",
+    "semestar", "rishu", "jugyou",
+    # 学校推薦・施設長推薦の推薦書様式（書式のみ、要項ではない）
+    "suisensyo", "suisen_syo", "suisenjyo",
+    "sibouriyuusyo", "rireki", "ganshosyo",
+    # Wikipedia等の百科事典サイト
+    "wikipedia.org", "wikimedia",
+    # 过去测试中发现的会混入其他大学的具体域名
+    "uestc.edu.cn",         # 中国电子科技大学
+    "hokkaido-univcoop.jp", # 北海道大学生協（非各大学公式）
 ]
 
 # URL 中出现以下关键词 → 正向信号，优先处理
@@ -624,13 +639,31 @@ def node_match_and_save(state: CrawlState) -> dict:
         processed.append(url)
         return {"processed_urls": processed, "current_raw_bytes": None}
 
+    # ── 大学名一致性验证 ──────────────────────────────────
+    # LLM 提取结果中的 university_name 若与目标大学不一致，说明是其他大学的 PDF
+    # 直接跳过，防止假阳性匹配
+    extracted_univ = extracted.get("university_name", "").strip()
+    if extracted_univ and extracted_univ != university_name:
+        from rapidfuzz import fuzz as _fuzz
+        import unicodedata as _ud
+        def _norm(s): return _ud.normalize("NFKC", s).replace(" ", "").replace("　", "")
+        similarity = _fuzz.token_sort_ratio(_norm(extracted_univ), _norm(university_name))
+        if similarity < 80:
+            logger.warning(
+                "[%s] 大学名不符，跳过写库（PDF 来自其他大学: %s, 相似度=%d）: %s",
+                university_name, extracted_univ, similarity, url
+            )
+            processed = list(state.get("processed_urls", []))
+            processed.append(url)
+            return {"processed_urls": processed, "current_raw_bytes": None}
+
     if not raw_bytes:
         logger.warning("[%s] 跳过写库（raw_bytes 丢失，无法计算 hash）: %s", university_name, url)
         processed = list(state.get("processed_urls", []))
         processed.append(url)
         return {"processed_urls": processed}
 
-    # ── 写入 crawled_pdfs ──────────────────────────────
+    # ── 写入 crawled_pdfs（大学名验证通过）──────────────
     pdf_scope = extracted.get("pdf_scope") or state.get("current_pdf_scope")
     db_result = upsert_crawled_pdf(
         university_name=university_name,

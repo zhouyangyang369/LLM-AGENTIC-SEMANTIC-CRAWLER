@@ -15,7 +15,12 @@ import pdfplumber
 logger = logging.getLogger(__name__)
 
 # PDF 文本最大字符数（超长 PDF 截断，防止超出 LLM context window）
-MAX_TEXT_CHARS = 12_000
+# 日文1字符≈1.5~2 token（UTF-8编码）
+# Claude Sonnet 4 context window: 200k token
+# 12000字 ≈ 18000~24000 token → 偏保守，但对于「目次+学部一覧」型PDF已足够
+# 对于超大PDF（>50000字），学部名通常集中在前几页，12000字基本能覆盖
+# 如需提升覆盖率可调至 30000，但LLM调用成本约增加2.5倍
+MAX_TEXT_CHARS = 30_000
 # 只取前 N 页做 scope 判断（节省 token）
 SCOPE_DETECTION_PAGES = 5
 
@@ -107,11 +112,12 @@ def build_extraction_prompt(
 4. sub_units には学科名（学部の場合）または専攻名（研究科の場合）を列挙する
 5. このPDFが学部のみ・大学院のみ・両方を含むかを pdf_scope で示す
 6. 確信度が低い場合は confidence を "low" または "medium" にする
+7. academic_year は必ずPDFテキストから実際に読み取ること（「令和7年度」「令和8年度」「2025年度」等）。読み取れない場合のみ "不明" とすること。テンプレートの値をそのまま使わないこと
 
 【出力形式（JSONのみ、説明文不要）】
 {{
   "university_name": "{university_name}",
-  "academic_year": "令和7年度",
+  "academic_year": "PDFから読み取った実際の年度（例：令和7年度、令和8年度）",
   "pdf_scope": "undergraduate | graduate | combined",
   "covered_units": [
     {{
