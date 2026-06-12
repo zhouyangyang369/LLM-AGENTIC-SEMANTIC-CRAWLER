@@ -14,11 +14,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from src.db.operations import get_uncovered_universities, get_coverage_stats
-from src.pipeline.phase3.crawl_graph import crawl_university
+from src.pipeline.phase3.crawl_graph import crawl_university, _TAVILY_INTER_UNIV_SLEEP
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,6 +97,11 @@ def run_batch(
             except Exception as e:
                 logger.error("[%s] 爬取失败: %s", name, e)
                 stats["failed"] += 1
+
+            # 大学间冷却间隔，避免 Tavily 速率限制（最后一所不需要等待）
+            if i < len(targets):
+                logger.debug("大学间冷却等待 %.0fs...", _TAVILY_INTER_UNIV_SLEEP)
+                time.sleep(_TAVILY_INTER_UNIV_SLEEP)
     else:
         # 并发执行
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

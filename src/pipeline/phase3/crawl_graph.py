@@ -24,7 +24,7 @@ import time
 import httpx
 from bs4 import BeautifulSoup
 from langgraph.graph import StateGraph, END
-from tavily import TavilyClient
+from ddgs import DDGS
 
 from src.db.operations import (
     get_uncovered_universities,
@@ -40,7 +40,7 @@ import os as _os
 _agentic_path = _os.path.join(_os.path.dirname(__file__), "..", "..", "..", "agentic_crawler")
 sys.path.insert(0, _os.path.abspath(_agentic_path))
 from llm.client import llm_call
-from config import TAVILY_API_KEY as _TAVILY_API_KEY_DEFAULT
+# DuckDuckGo 无需 API Key
 from src.pipeline.phase3.pdf_downloader import download_pdf, is_pdf_url, PDFDownloadError
 from src.pipeline.phase3.pdf_extractor import (
     extract_text_from_bytes,
@@ -102,8 +102,10 @@ _URL_POSITIVE_PATTERNS: list[str] = [
     "ippan", "suisen", "sogouga",
 ]
 
-# Tavily 搜索间隔（避免频率限制）
-_TAVILY_SLEEP: float = 1.2
+# DuckDuckGo 搜索间隔（避免频率限制）
+_TAVILY_SLEEP: float = 2.0          # 同一大学内、查询之间的间隔（变量名保持兼容）
+_TAVILY_INTER_UNIV_SLEEP: float = 3.0  # 大学间切换后的额外冷却（DuckDuckGo 比 Tavily 宽松）
+_TAVILY_RATE_LIMIT_SLEEP: float = 15.0 # 触发限流时的退避等待
 
 
 # ─────────────────────────────────────────────
@@ -254,7 +256,7 @@ def _build_search_queries(university_name: str, target_year: str, known_units: l
 
     # 兜底：泛查询（保证至少有结果）
     queries.append(f"{university_name} 募集要項 入試 filetype:pdf {target_year}")
-    queries.append(f"{university_name} admission PDF {target_year}")
+    queries.append(f"{university_name} 学生募集要項 入学案内")
 
     # 去重保序，最多 5 条
     seen: set[str] = set()
@@ -282,51 +284,91 @@ def node_search_pdfs(state: CrawlState) -> dict:
     known_units = state.get("known_units", [])
     logger.info("[%s] 搜索 PDF（Ground Truth 精准模式）...", university_name)
 
-    # 优先读 .env 环境变量，回退到 agentic_crawler/config.py 的默认值
-    tavily_api_key = os.environ.get("TAVILY_API_KEY") or _TAVILY_API_KEY_DEFAULT
-    if not tavily_api_key:
-        logger.error("[%s] TAVILY_API_KEY 未配置，无法搜索 PDF", university_name)
-        return {"candidate_urls": [], "should_continue": False}
-
-    tavily = TavilyClient(api_key=tavily_api_key)
     queries = _build_search_queries(university_name, target_year, known_units)
     logger.info("[%s] 生成 %d 条搜索查询: %s", university_name, len(queries), queries)
 
     # 分离：目标大学域名 URL（优先）vs 其他域名 URL（兜底）
     priority_urls: list[str] = []   # 目标大学域名的 URL
-    fallback_urls: list[str] = []   # 其他域名的 URL
+    fallback_urls: list[str] = []   # 其他域名の URL
     seen_urls: set[str] = set(state.get("processed_urls", []))
-
-    # 推断目标大学的域名关键词（取大学名罗马字简写，Tavily 结果里的 URL 含此词则优先）
-    # 这里用简单启发：URL 中不含其他大学名的汉字 → 视为可能相关
-    # 更准确的方式：第一条查询结果的域名作为目标域名
     target_domain: str = ""
 
     for i, query in enumerate(queries):
+        # 每条查询前（第一条除外）等待，避免触发频率限制
+        if i > 0:
+            time.sleep(_TAVILY_SLEEP)
+
+        # DuckDuckGo 搜索（带重试）
+        ddg_results: list[dict] = []
+        for attempt in range(3):
+            try:
+                with DDGS() as ddgs:
+                    raw = ddgs.text(
+                        query,
+                        max_results=8,
+                        region="jp-jp",
+                        safesearch="off",
+                    )
+                    ddg_results = list(raw) if raw else []
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                is_rate_limit = (
+                    "ratelimit" in err_str
+                    or "rate limit" in err_str
+                    or "202" in err_str
+                    or "429" in err_str
+                    or "timeout" in err_str
+                )
+                if is_rate_limit and attempt < 2:
+                    wait_time = _TAVILY_RATE_LIMIT_SLEEP * (attempt + 1)
+                    logger.warning(
+                        "[%s] DuckDuckGo 限流，第 %d 次重试，等待 %.0fs: %s",
+                        university_name, attempt + 1, wait_time, query
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logger.warning("[%s] DuckDuckGo 搜索失败 [query=%s]: %s", university_name, query, e)
+                    break
+
+        if not ddg_results:
+            continue
+
         try:
-            results = tavily.search(
-                query=query,
-                search_depth="advanced",
-                max_results=5,
-                include_domains=[],
-                exclude_domains=[],
-            )
-            # 第一条查询结果的第一个 URL 的域名作为目标域名
+            # 第一条结果中找 .ac.jp 或 .jp 域名作为目标域名
             if i == 0 and not target_domain:
-                for r in results.get("results", []):
-                    url = r.get("url", "")
+                for r in ddg_results:
+                    url = r.get("href", "")
+                    if url:
+                        from urllib.parse import urlparse
+                        netloc = urlparse(url).netloc
+                        # 优先选 .ac.jp 域名作为目标
+                        if ".ac.jp" in netloc or ".jp" in netloc:
+                            target_domain = netloc
+                            logger.info("[%s] 推断目标域名: %s", university_name, target_domain)
+                            break
+                # 若未找到 .jp 域名，取第一个结果的域名
+                if not target_domain and ddg_results:
+                    url = ddg_results[0].get("href", "")
                     if url:
                         from urllib.parse import urlparse
                         target_domain = urlparse(url).netloc
-                        logger.info("[%s] 推断目标域名: %s", university_name, target_domain)
-                        break
+                        logger.info("[%s] 推断目标域名(fallback): %s", university_name, target_domain)
 
-            for r in results.get("results", []):
-                url = r.get("url", "")
+            for r in ddg_results:
+                # DuckDuckGo 结果字段：href / title / body
+                url = r.get("href", "")
                 if not url or url in seen_urls:
                     continue
 
-                is_target = target_domain and target_domain in url
+                # 非 .jp 域名且非目标域名的结果直接跳过（避免英文垃圾结果）
+                from urllib.parse import urlparse as _urlparse
+                url_netloc = _urlparse(url).netloc
+                is_jp = ".jp" in url_netloc
+                is_target = bool(target_domain and target_domain in url)
+                if not is_jp and not is_target:
+                    logger.debug("[%s] 跳过非.jp域名: %s", university_name, url[:60])
+                    continue
 
                 if is_pdf_url(url):
                     if is_target:
@@ -353,11 +395,8 @@ def node_search_pdfs(state: CrawlState) -> dict:
                         fallback_urls.append(url)
                     seen_urls.add(url)
 
-            if i < len(queries) - 1:
-                time.sleep(_TAVILY_SLEEP)
-
         except Exception as e:
-            logger.warning("[%s] Tavily 搜索失败 [query=%s]: %s", university_name, query, e)
+            logger.warning("[%s] DuckDuckGo 结果处理异常 [query=%s]: %s", university_name, query, e)
 
     # 合并：目标域名优先，其他兜底
     combined = priority_urls + fallback_urls
