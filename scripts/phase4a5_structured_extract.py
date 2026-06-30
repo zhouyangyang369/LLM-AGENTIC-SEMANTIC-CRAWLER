@@ -1,35 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Phase 4A.5: full_text 全文から構造化データ抽出（Map-Reduce方式）
+Phase 4A.5: full_text 全文から構造化データ抽出（分級処理方式）
 
-処理内容:
-  1. crawled_pdfs.full_text（全文・截断なし）を読み込み
-  2. 長文の場合はページ単位でチャンク分割（Map）
-  3. 各チャンクから LLM で入試情報を抽出
-  4. 複数チャンクの結果を LLM でマージ（Reduce）
-  5. 結果を crawled_pdfs.structured_data（JSONB）に保存
+文字数に応じて3段階で処理する。LLM 呼び出し回数を大幅削減（従来比 -90%）。
 
-抽出フィールド（入試方式別）:
-  - 出願期間（start/end/notes）
-  - 試験日
-  - 合格発表日
-  - 入学手続締切日
-  - 募集定員
-  - 試験科目・配点
-  - 出願資格
-  - 必要書類
+  <= 15,000字  : SHORT       - 全文をそのまま1回で抽出
+  <= 60,000字  : MEDIUM      - 前半12,000字 + 後半3,000字 -> 1回抽出
+  >  60,000字  : LONG        - キーワードページを検出して抜粋 -> 1~2回
 
 使用方法:
   python scripts/phase4a5_structured_extract.py --dry-run
   python scripts/phase4a5_structured_extract.py
-  python scripts/phase4a5_structured_extract.py --universities 北海道大学
-  python scripts/phase4a5_structured_extract.py --limit 5  # テスト用
-  python scripts/phase4a5_structured_extract.py --reprocess  # 再処理
-
-事前条件:
-  - Phase 4A 完了済み（crawled_pdfs.full_text が存在）
-  - Supabase に structured_data カラムが追加済み:
-    ALTER TABLE crawled_pdfs ADD COLUMN IF NOT EXISTS structured_data JSONB;
+  python scripts/phase4a5_structured_extract.py --universities 北海道大学 東北大学
+  python scripts/phase4a5_structured_extract.py --limit 5
+  python scripts/phase4a5_structured_extract.py --reprocess
+  python scripts/phase4a5_structured_extract.py --all
 """
 import sys
 import os
@@ -39,262 +24,247 @@ import time
 import argparse
 from typing import Optional
 
-sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'agentic_crawler')
+    os.path.join(os.path.dirname(__file__), "..", "agentic_crawler")
 ))
 
 from dotenv import load_dotenv
 load_dotenv()
 
-# ── 設定 ─────────────────────────────────────────────────────────
-MAP_CHUNK_SIZE = 4000     # Map フェーズの1チャンク文字数
-MAP_OVERLAP = 200         # チャンク間のオーバーラップ（文脈保持）
-SLEEP_BETWEEN_PDFS = 1.0 # PDF間の待機（秒）
-SLEEP_BETWEEN_LLM = 0.3  # LLM呼び出し間の待機（秒）
+# ============================================================
+# 設定
+# ============================================================
+THRESH_SHORT  = 15_000
+THRESH_MEDIUM = 60_000
+MEDIUM_HEAD   = 12_000
+MEDIUM_TAIL   =  3_000
+LONG_PAGE_WINDOW = 3
+LONG_MAX_CHARS   = 15_000
 
+KEY_PAGE_KEYWORDS = [
+    "出願期間", "出願資格", "試験日", "合格発表", "入学手続",
+    "募集人員", "募集定員", "選抜方法", "試験科目", "配点",
+    "検定料", "出願書類", "一般選抜", "学校推薦型", "総合型選抜",
+]
 
-# ── Map フェーズ：1チャンクから情報抽出 ──────────────────────────
+SLEEP_BETWEEN_PDFS = 1.5
+SLEEP_BETWEEN_LLM  = 0.5
 
-MAP_PROMPT = """あなたは日本の大学入試募集要項から情報を抽出する専門家です。
-以下のテキストから入試に関する情報を抽出してください。
+EXP_UNIVERSITIES = [
+    "山形大学", "大阪大学", "福島大学", "横浜国立大学",
+    "名古屋工業大学", "上越教育大学", "旭川医科大学",
+    "北見工業大学", "東京外国語大学", "金沢大学",
+]
 
-【大学名】{university_name}
-【学部/研究科】{unit_name}
-【テキスト】
-{chunk_text}
+# ============================================================
+# プロンプト
+# ============================================================
+EXTRACT_PROMPT = (
+    "あなたは日本の大学入試募集要項から情報を抽出する専門家です。\n"
+    "以下のテキストから入試に関するすべての情報を抽出してください。\n\n"
+    "【大学名】{university_name}\n"
+    "【学部/研究科】{unit_name}\n"
+    "【テキスト（{text_label}）】\n"
+    "{text}\n\n"
+    "以下のJSON形式で抽出してください。\n"
+    "- 情報が見つからない場合はそのフィールドを省略（nullではなく省略）\n"
+    "- 複数の入試方式がある場合はすべて抽出\n"
+    "- 日付は原文表記のまま\n"
+    "- 定員は数字のみ\n\n"
+    "{{\n"
+    '  "exam_types": [\n'
+    "    {{\n"
+    '      "type": "入試方式名",\n'
+    '      "target": "対象学部・学科・専攻",\n'
+    '      "application_period": {{\n'
+    '        "start": "出願開始日",\n'
+    '        "end": "出願締切日",\n'
+    '        "notes": "消印有効等"\n'
+    "      }},\n"
+    '      "exam_date": "試験実施日",\n'
+    '      "result_date": "合格発表日",\n'
+    '      "enrollment_deadline": "入学手続締切日",\n'
+    '      "capacity": 募集人員の数字,\n'
+    '      "exam_subjects": [\n'
+    '        {{"subject": "科目名", "score": 配点数字, "notes": "備考"}}\n'
+    "      ],\n"
+    '      "qualification": "出願資格の概要",\n'
+    '      "application_documents": ["調査書", "志願票"],\n'
+    '      "notes": "その他特記事項"\n'
+    "    }}\n"
+    "  ],\n"
+    '  "general_info": {{\n'
+    '    "academic_year": "対象年度（例：令和7年度）",\n'
+    '    "university_name": "{university_name}",\n'
+    '    "notes": "全体的な特記事項"\n'
+    "  }}\n"
+    "}}\n\n"
+    "JSONのみ出力してください。説明文・コードブロック記号は不要です。"
+)
 
-以下のJSON形式で抽出してください。
-情報が見つからない場合はそのフィールドを省略してください。
-複数の入試方式がある場合はすべて抽出してください。
+MERGE_PROMPT = (
+    "以下は同じPDFの前半・後半から抽出された入試情報です。\n"
+    "マージして重複を排除し、最も完全な情報にまとめてください。\n\n"
+    "【大学名】{university_name}\n"
+    "【前半の抽出結果】\n"
+    "{result1}\n\n"
+    "【後半の抽出結果】\n"
+    "{result2}\n\n"
+    "ルール:\n"
+    "- 同じ入試方式は1つにまとめ、情報が多い方を優先する\n"
+    "- 日付・定員など具体的な数値は必ず保持する\n"
+    "- JSONのみ出力（説明不要）\n"
+)
 
-{{
-  "exam_types": [
-    {{
-      "type": "入試方式名（例：一般選抜前期日程、学校推薦型選抜、総合型選抜等）",
-      "target": "対象学部・学科・専攻（あれば）",
-      "application_period": {{
-        "start": "YYYY-MM-DD または 月日表記",
-        "end": "YYYY-MM-DD または 月日表記",
-        "notes": "消印有効等の注記"
-      }},
-      "exam_date": "試験日（YYYY-MM-DD または 月日表記）",
-      "result_date": "合格発表日",
-      "enrollment_deadline": "入学手続締切日",
-      "capacity": 募集人員（数字）,
-      "exam_subjects": [
-        {{"subject": "科目名", "score": 配点数字, "notes": "備考"}}
-      ],
-      "qualification": "出願資格",
-      "application_documents": ["必要書類1", "必要書類2"],
-      "notes": "その他特記事項"
-    }}
-  ],
-  "general_info": {{
-    "academic_year": "対象年度（例：令和7年度）",
-    "notes": "全体的な特記事項"
-  }}
-}}
-
-JSONのみ出力してください。説明文は不要です。"""
-
-
-def extract_from_chunk(
-    llm_call,
-    chunk_text: str,
-    university_name: str,
-    unit_name: str,
-) -> Optional[dict]:
-    """1チャンクから構造化情報を抽出する（Mapフェーズ）"""
-    prompt = MAP_PROMPT.format(
-        university_name=university_name,
-        unit_name=unit_name or '全学',
-        chunk_text=chunk_text,
-    )
+# ============================================================
+# JSON パース
+# ============================================================
+def _parse_json_response(response: str) -> Optional[dict]:
+    text = response.strip()
+    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+    text = re.sub(r"\n?```$", "", text)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     try:
-        response = llm_call(prompt, max_tokens=2000)
-        # JSON 抽出
-        match = re.search(r'\{.*\}', response, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except json.JSONDecodeError as e:
-        # JSON修復を試みる
-        try:
-            # 末尾の不完全な部分を除去
-            text = match.group() if match else response
-            text = re.sub(r',\s*}', '}', text)
-            text = re.sub(r',\s*]', ']', text)
-            return json.loads(text)
-        except Exception:
-            pass
-    except Exception as e:
+        return json.loads(text)
+    except json.JSONDecodeError:
         pass
-    return None
-
-
-# ── Reduce フェーズ：複数チャンクの結果をマージ ───────────────────
-
-REDUCE_PROMPT = """以下は同じPDFの異なる部分から抽出された入試情報です。
-これらをマージして、重複を排除し、最も完全な情報を持つJSONを生成してください。
-
-【大学名】{university_name}
-【抽出結果リスト】
-{extracted_list}
-
-同じ入試方式の情報はマージし、情報が多い方を優先してください。
-出願期間・試験日・定員など具体的な数値・日付が得られている場合は必ず保持してください。
-
-最終的なJSONのみ出力してください。
-形式は入力と同じ構造を維持してください。"""
-
-
-def merge_extractions(
-    llm_call,
-    extractions: list[dict],
-    university_name: str,
-) -> dict:
-    """複数チャンクの抽出結果をマージする（Reduceフェーズ）"""
-    if len(extractions) == 1:
-        return extractions[0]
-
-    # 全抽出結果を結合してLLMでマージ
-    extracted_list = json.dumps(extractions, ensure_ascii=False, indent=2)
-
-    # トークン制限対策：抽出結果が多い場合は要約して渡す
-    if len(extracted_list) > 8000:
-        # exam_types のみ抽出してマージ
-        all_exam_types = []
-        general_info = {}
-        for ext in extractions:
-            if isinstance(ext, dict):
-                all_exam_types.extend(ext.get('exam_types', []))
-                if ext.get('general_info'):
-                    general_info.update(ext['general_info'])
-        simplified = {
-            'exam_types': all_exam_types,
-            'general_info': general_info
-        }
-        extracted_list = json.dumps(simplified, ensure_ascii=False, indent=2)
-
-    prompt = REDUCE_PROMPT.format(
-        university_name=university_name,
-        extracted_list=extracted_list[:10000],  # 最大10000字
-    )
-
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    candidate = match.group()
+    candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
     try:
-        response = llm_call(prompt, max_tokens=3000)
-        match = re.search(r'\{.*\}', response, re.DOTALL)
-        if match:
-            result = json.loads(match.group())
-            return result
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+# ============================================================
+# テキスト準備（分級処理）
+# ============================================================
+def _split_pages(full_text: str) -> list:
+    parts = re.split(r"--- Page (\d+) ---", full_text)
+    if len(parts) <= 1:
+        return [(0, full_text.strip())]
+    pages = []
+    i = 1
+    while i < len(parts) - 1:
+        page_no = int(parts[i])
+        page_text = parts[i + 1].strip()
+        if page_text:
+            pages.append((page_no, page_text))
+        i += 2
+    return pages if pages else [(0, full_text.strip())]
+
+
+def prepare_text_for_extraction(full_text: str, university_name: str) -> tuple:
+    """全文をそのまま送信する（全文モード）"""
+    return [full_text], "FULLTEXT"
+
+
+# ============================================================
+# LLM 抽出
+# ============================================================
+def extract_one(llm_call, text: str, university_name: str,
+                unit_name: str, text_label: str = "全文") -> Optional[dict]:
+    prompt = EXTRACT_PROMPT.format(
+        university_name=university_name,
+        unit_name=unit_name or "全学部・全研究科",
+        text=text,
+        text_label=text_label,
+    )
+    try:
+        response = llm_call(prompt, max_tokens=8192)
+        result = _parse_json_response(response)
+        if result is None:
+            print("    [DEBUG] JSON parse failed. Response head:")
+            print("    " + repr(response[:400]))
+        return result
+    except Exception as e:
+        print("    [DEBUG] LLM error: {}".format(e))
+        return None
+
+
+def merge_two_results(llm_call, result1: dict, result2: dict,
+                      university_name: str) -> dict:
+    prompt = MERGE_PROMPT.format(
+        university_name=university_name,
+        result1=json.dumps(result1, ensure_ascii=False, indent=2)[:5000],
+        result2=json.dumps(result2, ensure_ascii=False, indent=2)[:5000],
+    )
+    try:
+        response = llm_call(prompt, max_tokens=8192)
+        merged = _parse_json_response(response)
+        if merged:
+            return merged
     except Exception:
         pass
-
-    # マージ失敗時は単純結合
-    all_exam_types = []
-    general_info = {}
-    seen_types = set()
-    for ext in extractions:
-        if isinstance(ext, dict):
-            for et in ext.get('exam_types', []):
-                et_type = et.get('type', '')
-                if et_type not in seen_types:
-                    all_exam_types.append(et)
-                    seen_types.add(et_type)
-            if ext.get('general_info'):
-                general_info.update(ext['general_info'])
-    return {'exam_types': all_exam_types, 'general_info': general_info}
+    all_exam_types = result1.get("exam_types", []) + result2.get("exam_types", [])
+    general_info = {**result1.get("general_info", {}), **result2.get("general_info", {})}
+    seen, deduped = set(), []
+    for et in all_exam_types:
+        key = et.get("type", "")
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(et)
+        elif not key:
+            deduped.append(et)
+    return {"exam_types": deduped, "general_info": general_info}
 
 
-# ── テキストをチャンク分割 ────────────────────────────────────────
-
-def split_text_for_map(full_text: str, chunk_size: int = MAP_CHUNK_SIZE) -> list[str]:
-    """
-    full_text をページ区切りを優先して Map 用チャンクに分割する。
-    ページ区切り（--- Page N ---）を優先し、それでも大きい場合は段落で分割。
-    """
-    if len(full_text) <= chunk_size:
-        return [full_text]
-
-    # ページ区切りで分割
-    pages = re.split(r'--- Page \d+ ---', full_text)
-    pages = [p.strip() for p in pages if p.strip()]
-
-    chunks = []
-    current_chunk = ''
-
-    for page in pages:
-        if len(current_chunk) + len(page) <= chunk_size:
-            current_chunk += ('\n\n' if current_chunk else '') + page
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-            if len(page) > chunk_size:
-                # 1ページが大きすぎる場合は段落で分割
-                paragraphs = re.split(r'\n{2,}', page)
-                para_chunk = ''
-                for para in paragraphs:
-                    if len(para_chunk) + len(para) <= chunk_size:
-                        para_chunk += ('\n\n' if para_chunk else '') + para
-                    else:
-                        if para_chunk:
-                            chunks.append(para_chunk)
-                        para_chunk = para
-                current_chunk = para_chunk
-            else:
-                current_chunk = page
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    return chunks
-
-
-# ── メイン処理 ────────────────────────────────────────────────────
-
+# ============================================================
+# メイン
+# ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description='Phase 4A.5: full_text全文からLLM構造化抽出（Map-Reduce）'
+        description="Phase 4A.5: full_text全文からLLM構造化抽出（分級処理方式）"
     )
-    parser.add_argument('--dry-run', action='store_true', help='確認のみ（変更なし）')
-    parser.add_argument('--universities', nargs='+', help='対象大学名')
-    parser.add_argument('--limit', type=int, help='処理件数上限（テスト用）')
-    parser.add_argument('--reprocess', action='store_true', help='処理済みも再処理')
-    parser.add_argument('--doc-types', nargs='+',
-                        default=['募集要項', '選抜要項', '出願要領'],
-                        help='処理対象のdoc_type（デフォルト：募集要項・選抜要項・出願要領）')
+    parser.add_argument("--dry-run", action="store_true", help="確認のみ（変更なし）")
+    parser.add_argument("--universities", nargs="+", help="対象大学名（省略時は実験用10大学）")
+    parser.add_argument("--all", action="store_true", help="full_textありの全大学を対象")
+    parser.add_argument("--limit", type=int, help="処理件数上限")
+    parser.add_argument("--reprocess", action="store_true", help="処理済みも再処理")
+    parser.add_argument("--doc-types", nargs="+",
+                        default=["募集要項", "選抜要項", "出願要領"])
     args = parser.parse_args()
 
     from src.db.supabase_client import get_supabase
     from llm.client import llm_call
     client = get_supabase()
 
-    mode_str = '[DRY-RUN] ' if args.dry_run else ''
-    print(f'{mode_str}Phase 4A.5: 構造化データ抽出 開始')
-    print(f'  対象 doc_type: {args.doc_types}')
-    print('=' * 65)
+    if args.all:
+        target_universities = None
+    elif args.universities:
+        target_universities = args.universities
+    else:
+        target_universities = EXP_UNIVERSITIES
 
-    # ── 対象レコード取得 ──────────────────────────────────────
-    print('対象PDFを取得中...', file=sys.stderr)
+    mode_str = "[DRY-RUN] " if args.dry_run else ""
+    print("{}Phase 4A.5: 構造化データ抽出 開始（分級処理方式）".format(mode_str))
+    print("  対象 doc_type  : {}".format(args.doc_types))
+    print("  対象大学       : {}".format(target_universities or "全大学"))
+    print("=" * 70)
+
     all_records = []
     page_size = 100
     offset = 0
-
     while True:
-        q = client.table('crawled_pdfs')\
-            .select('id,university_name,pdf_url,pdf_scope,actual_year,'
-                    'academic_year,extracted_units,full_text,doc_type')\
-            .eq('is_excluded', False)\
-            .not_.is_('full_text', 'null')\
-            .in_('doc_type', args.doc_types)\
+        q = (
+            client.table("crawled_pdfs")
+            .select("id,university_name,pdf_url,pdf_scope,actual_year,"
+                    "academic_year,extracted_units,full_text,char_count,doc_type")
+            .eq("is_excluded", False)
+            .not_.is_("full_text", "null")
+            .in_("doc_type", args.doc_types)
             .range(offset, offset + page_size - 1)
-
-        if args.universities:
-            q = q.in_('university_name', args.universities)
+        )
+        if target_universities:
+            q = q.in_("university_name", target_universities)
         if not args.reprocess:
-            q = q.is_('structured_data', 'null')
-
+            q = q.is_("structured_data", "null")
         r = q.execute()
         if not r.data:
             break
@@ -302,119 +272,147 @@ def main():
         if len(r.data) < page_size:
             break
         offset += page_size
-        print(f'  取得済み: {offset} 件...', file=sys.stderr)
 
     if args.limit:
         all_records = all_records[:args.limit]
-
-    print(f'対象: {len(all_records)} 件\n')
+    print("対象: {} 件\n".format(len(all_records)))
 
     if args.dry_run:
-        print('[DRY-RUN] 処理対象サンプル（最大5件）:')
-        for rec in all_records[:5]:
-            ft = rec.get('full_text', '') or ''
-            chunks = split_text_for_map(ft)
-            print(f'  [{rec["university_name"]}] {rec.get("doc_type","")}'
-                  f' | {len(ft):,}字 → {len(chunks)} Mapチャンク')
-        print(f'\n推定LLM呼び出し数: ~{sum(len(split_text_for_map(r.get("full_text","") or "")) for r in all_records[:5]) * len(all_records) // max(len(all_records[:5]),1)} 回')
-        print('[DRY-RUN] 実際の変更は行いません。')
+        mode_counts = {}
+        total_llm_calls = 0
+        print("[DRY-RUN] 処理モード内訳（全{}件）:\n".format(len(all_records)))
+        print("  {:<20} {:<8} {:>10}  {:<16} {}".format(
+            "大学名", "doc_type", "字数", "モード", "LLM呼出"))
+        print("  " + "-" * 62)
+        for rec in all_records:
+            ft = rec.get("full_text", "") or ""
+            texts, mode = prepare_text_for_extraction(ft, rec["university_name"])
+            llm_n = len(texts) + (1 if len(texts) > 1 else 0)
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+            total_llm_calls += llm_n
+            print("  {:<20} {:<8} {:>10,}字  {:<16} {}回".format(
+                rec["university_name"],
+                rec.get("doc_type", ""),
+                len(ft),
+                mode,
+                llm_n,
+            ))
+        print("\n  モード別件数: {}".format(mode_counts))
+        print("  推定 LLM 呼び出し合計: {} 回".format(total_llm_calls))
+        print("\n[DRY-RUN] 実際の変更は行いません。")
         return
 
-    # ── 処理ループ ────────────────────────────────────────────
     success = 0
     failed = 0
-    total_map_calls = 0
+    total_llm_calls = 0
 
     for i, rec in enumerate(all_records, 1):
-        pdf_id = rec['id']
-        university_name = rec['university_name']
-        full_text = rec.get('full_text', '') or ''
+        pdf_id = rec["id"]
+        university_name = rec["university_name"]
+        full_text = rec.get("full_text", "") or ""
+        char_count = rec.get("char_count") or len(full_text)
 
-        # unit_name を extracted_units から取得
-        eu = rec.get('extracted_units') or {}
+        eu = rec.get("extracted_units") or {}
         if isinstance(eu, str):
             try:
                 eu = json.loads(eu)
             except Exception:
                 eu = {}
-        covered = eu.get('covered_units', [])
-        unit_name = covered[0].get('unit_name', '') if covered else ''
+        covered = eu.get("covered_units", [])
+        unit_name = covered[0].get("unit_name", "") if covered else ""
 
-        print(f'[{i}/{len(all_records)}] {university_name} | {len(full_text):,}字 | {rec.get("doc_type","")}')
+        print("[{}/{}] {} | {:,}字 | {} | {}".format(
+            i, len(all_records), university_name, char_count,
+            rec.get("doc_type", ""), rec.get("actual_year", ""),
+        ))
 
-        if not full_text:
-            print(f'  ✗ full_text が空 → スキップ')
+        if not full_text or char_count < 100:
+            print("  skipped: full_text empty or too short")
             failed += 1
             continue
 
-        # ── Map フェーズ ──────────────────────────────────────
-        map_chunks = split_text_for_map(full_text)
-        print(f'  → {len(map_chunks)} Mapチャンクで処理')
+        texts, mode = prepare_text_for_extraction(full_text, university_name)
+        sizes = " + ".join("{:,}字".format(len(t)) for t in texts)
+        print("  mode: {} | {} texts ({})".format(mode, len(texts), sizes))
 
-        map_results = []
-        for j, chunk in enumerate(map_chunks, 1):
-            result = extract_from_chunk(llm_call, chunk, university_name, unit_name)
-            if result:
-                # 有意な情報が含まれているか確認
-                exam_types = result.get('exam_types', [])
-                if exam_types:
-                    map_results.append(result)
-                    print(f'    Map [{j}/{len(map_chunks)}]: {len(exam_types)} 入試方式を抽出')
-                else:
-                    print(f'    Map [{j}/{len(map_chunks)}]: 入試情報なし（スキップ）')
+        results = []
+        for k, text in enumerate(texts):
+            if mode == "SHORT":
+                label = "全文"
+            elif mode == "MEDIUM":
+                label = "前半+後半抜粋"
+            elif mode == "LONG":
+                label = "キーワードページ抜粋"
+            elif mode == "LONG_FALLBACK":
+                label = "前後抜粋（キーワード未検出）"
             else:
-                print(f'    Map [{j}/{len(map_chunks)}]: 抽出失敗')
-            total_map_calls += 1
+                label = "キーワードページ抜粋（{}）".format("前半" if k == 0 else "後半")
+
+            result = extract_one(llm_call, text, university_name, unit_name, label)
+            total_llm_calls += 1
             time.sleep(SLEEP_BETWEEN_LLM)
 
-        if not map_results:
-            print(f'  ✗ 有効な抽出結果なし')
-            # 空のstructured_dataを保存（再処理不要マーク）
-            client.table('crawled_pdfs').update({
-                'structured_data': {'exam_types': [], 'general_info': {}, 'note': '抽出情報なし'}
-            }).eq('id', pdf_id).execute()
+            if result and result.get("exam_types"):
+                n_et = len(result["exam_types"])
+                print("  OK: {} exam_types extracted".format(n_et))
+                results.append(result)
+            elif result:
+                gi = result.get("general_info", {})
+                notes = gi.get("notes", "")[:80]
+                print("  exam_types empty: {}".format(notes))
+                results.append(result)
+            else:
+                print("  FAILED: JSON parse error")
+
+        if mode == "LONG_SPLIT" and len(results) == 2:
+            print("  merging 2 results...")
+            final_result = merge_two_results(
+                llm_call, results[0], results[1], university_name
+            )
+            total_llm_calls += 1
+            time.sleep(SLEEP_BETWEEN_LLM)
+        elif results:
+            final_result = results[0]
+        else:
+            print("  no valid result -> saving empty")
+            client.table("crawled_pdfs").update({
+                "structured_data": {
+                    "exam_types": [],
+                    "general_info": {},
+                    "_meta": {"note": "no extraction", "mode": mode},
+                }
+            }).eq("id", pdf_id).execute()
             failed += 1
             time.sleep(SLEEP_BETWEEN_PDFS)
             continue
 
-        # ── Reduce フェーズ ───────────────────────────────────
-        if len(map_results) > 1:
-            print(f'  → Reduceフェーズ: {len(map_results)} 結果をマージ')
-            final_result = merge_extractions(llm_call, map_results, university_name)
-        else:
-            final_result = map_results[0]
-
-        # メタデータ付与
-        final_result['_meta'] = {
-            'university_name': university_name,
-            'unit_name': unit_name,
-            'academic_year': rec.get('actual_year') or rec.get('academic_year', ''),
-            'pdf_scope': rec.get('pdf_scope', ''),
-            'pdf_url': rec.get('pdf_url', ''),
-            'doc_type': rec.get('doc_type', ''),
-            'map_chunks': len(map_chunks),
-            'map_results': len(map_results),
+        final_result["_meta"] = {
+            "university_name": university_name,
+            "unit_name": unit_name,
+            "academic_year": rec.get("actual_year") or rec.get("academic_year", ""),
+            "pdf_scope": rec.get("pdf_scope", ""),
+            "pdf_url": rec.get("pdf_url", ""),
+            "doc_type": rec.get("doc_type", ""),
+            "mode": mode,
+            "char_count": char_count,
         }
 
-        # exam_types の件数をカウント
-        n_exam_types = len(final_result.get('exam_types', []))
-        print(f'  ✓ {n_exam_types} 入試方式の情報を抽出・保存')
+        n_exam_types = len(final_result.get("exam_types", []))
+        print("  saved: {} exam_types".format(n_exam_types))
 
-        # DB 保存
-        client.table('crawled_pdfs').update({
-            'structured_data': final_result
-        }).eq('id', pdf_id).execute()
+        client.table("crawled_pdfs").update({
+            "structured_data": final_result
+        }).eq("id", pdf_id).execute()
 
         success += 1
         time.sleep(SLEEP_BETWEEN_PDFS)
 
-    # ── 完了サマリー ──────────────────────────────────────────
-    print('\n' + '=' * 65)
-    print(f'✅ Phase 4A.5 完了')
-    print(f'  成功:           {success} 件')
-    print(f'  失敗/情報なし:  {failed} 件')
-    print(f'  総LLM呼び出し:  {total_map_calls} 回（Mapフェーズのみ）')
+    print("\n" + "=" * 70)
+    print("Phase 4A.5 done")
+    print("  success: {}".format(success))
+    print("  failed:  {}".format(failed))
+    print("  total LLM calls: {}".format(total_llm_calls))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@
 
 > **用途**：本文档面向 AI Agent（或新加入的开发者），用于在每次新 Session 开始时快速恢复项目上下文。  
 > **维护原则**：每次有功能变更、调试结论、阶段推进时，请同步更新本文档对应章节。  
-> **最后更新**：2026-06
+> **最后更新**：2026-07（新增第五阶段：教授信息 & 研究室URL爬取）
 
 ---
 
@@ -16,10 +16,11 @@
 6. [第二阶段：LLM Agentic 语义爬虫（ReAct）](#6-第二阶段llm-agentic-语义爬虫react)
 7. [第三阶段：Ground Truth 驱动爬取（当前主线）](#7-第三阶段ground-truth-驱动爬取当前主线)
 8. [第四阶段：RAG データ準備（計画中）](#8-第四阶段rag-データ準備計画中)
-9. [当前进度与待办事项](#9-当前进度与待办事项)
-10. [已知问题与注意事项](#10-已知问题与注意事项)
-11. [快速启动命令速查](#11-快速启动命令速查)
-12. [更新日志](#12-更新日志)
+9. [第五阶段：教授信息 & 研究室URL爬取](#9-第五阶段教授信息--研究室url爬取)
+10. [当前进度与待办事项](#10-当前进度与待办事项)
+11. [已知问题与注意事项](#11-已知问题与注意事项)
+12. [快速启动命令速查](#12-快速启动命令速查)
+13. [更新日志](#13-更新日志)
 
 ---
 
@@ -442,18 +443,23 @@ PDF バイト列
   └── 結果を crawled_pdfs.full_text / page_count / char_count に保存
   └── 対象: 1340件（除外済みを除く）
 
-【Phase 4A.5 📋設計確定・実装待ち】scripts/phase4a5_structured_extract.py
-  └── full_text 全文から LLM で構造化データ抽出（截断なし・Map-Reduce方式）
-  └── 抽出フィールド：出願期間・試験日・合格発表日・入学手続締切・
-                      試験科目・配点・定員・出願資格・必要書類
-  └── 入試方式別に個別抽出（一般前期・後期・推薦・総合型・社会人等）
-  └── 結果を crawled_pdfs.structured_data（JSONB）に保存
-  └── 【設計方針】先に full_text 全体から structured_data を抽出し、
-      その後 chunk 生成時に structured_data を各 chunk の context に付加する
-      → chunk が PDF の局所情報しか持たない問題を解決
-      → 「北海道大学工学部の推薦入試の出願期間は？」等の精確クエリに対応
+【Phase 4A.5 ✅実験完了（10大学）】scripts/phase4a5_structured_extract.py
+  └── 実装方式：全文一括送信（FULLTEXT）モード
+      当初のMap-Reduce（4,000字チャンク）方式を廃止。
+      Claude Sonnet 4の200K context windowを活用し全文をそのまま送信。
+      max_tokens=8192に設定し出力截断を防止。
+  └── 実験対象：10所国立大学（山形・大阪・福島・横浜国立・名古屋工業・
+      上越教育・旭川医科・北見工業・東京外国語・金沢）91件（有効84件）
+  └── 実験結果：
+      - 抽出成功：75件（82%）
+      - 空/失敗：9件（募集要項でない文書が大半・正当スキップ）
+      - 合計 exam_types：444件
+  └── 旧截取方式との比較：exam_types 248件→444件（+79%）
+      application_period等の日程情報充填率が大幅改善
+  └── フィールド充填率：type 100% / target 97% / capacity 60%
+  └── 結果を crawled_pdfs.structured_data（JSONB）に保存済み
 
-【Phase 4B 📋実装待ち】scripts/phase4b_chunking.py
+【Phase 4B ✅実験完了（10大学）】scripts/phase4b_chunking.py
   └── 見出し境界でセクション分割（500~800字/chunk）
   └── 各chunkに structured_data の要約を context として付加
       chunk_text_with_context =
@@ -463,10 +469,11 @@ PDF バイト列
         "[chunk本文]"
   └── pdf_chunks テーブルへ保存
 
-【Phase 4C 📋実装待ち】scripts/phase4c_embedding.py
-  └── cohere.embed-multilingual-v3（Vortex経由）
-  └── ベクトルは Qdrant Cloud に保存（Supabase には保存しない）
-  └── Qdrant payload に university_name/unit_name/year/scope 等を格納
+【Phase 4C ✅実験完了（10大学）】scripts/phase4c_embedding.py
+  └── cohere.embed-multilingual-v3（Vortex外部ゲートウェイ経由）
+  └── API形式：input + input_type（OpenAI互換）
+  └── 4,159件全件成功・0件失敗
+  └── Qdrant Cloud pdf_chunksコレクション（1024次元 Cosine）に保存完了
   └── Supabase pdf_chunks.id = Qdrant point_id で紐付け
 
 【Phase 4D 📋実装待ち】src/pipeline/phase4/retrieval_pipeline.py
@@ -510,7 +517,150 @@ PDF バイト列
 
 ---
 
-## 9. 当前进度与待办事项
+---
+
+## 9. 第五阶段：教授信息 & 研究室URL爬取
+
+### 状态：🔄 进行中
+
+### 背景与目标
+在完成募集要项爬取（Phase 1~4）的基础上，项目新增了**旧帝大7校教员信息采集**功能，面向前端网站展示教授简介、研究方向及研究室主页链接。  
+目标大学：**東京大学・京都大学・大阪大学・名古屋大学・東北大学・北海道大学・九州大学**（共7所）
+
+### 核心文件
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/crawl_professors.py` | **主爬虫**：Selenium + researchmap.jp 爬取教员基本信息 |
+| `scripts/crawl_lab_urls.py` | **研究室URL爬虫**：DuckDuckGo搜索大学官网域名的研究室页面 |
+| `add_lab_url_and_crawl.py` | 早期版本（duckduckgo_search库），功能与crawl_lab_urls.py相同 |
+| `check_lab_url_quality.py` | 数据质量报告：覆盖率、域名分析、重复URL、问题PDF链接 |
+| `check_lab_url_sample.py` | 快速抽样查看已爬取的lab_url内容 |
+| `crawl_professors.log` | 教员爬取运行日志 |
+| `crawl_lab_urls.log` | 研究室URL爬取日志（当前为空，尚未运行） |
+
+### 数据库表：`professor`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | UUID/INT | 主键 |
+| `researchmap_id` | TEXT | researchmap.jp 用户ID（唯一约束，用于 upsert） |
+| `university_name` | TEXT | 所属大学名（7校之一） |
+| `name_ja` | TEXT | 日文氏名 |
+| `name_en` | TEXT | 英文氏名 |
+| `name_kana` | TEXT | 假名氏名 |
+| `affiliation` | TEXT | 所属（研究科+职位全文，最多400字） |
+| `kenkyuka_name` | TEXT | 研究科名（从affiliation正则提取） |
+| `senkou_name` | TEXT | 专攻名（从affiliation正则提取） |
+| `position` | TEXT | 职位（教授/准教授/助教/講師等） |
+| `research_fields` | TEXT[] | 研究分野列表（最多10个） |
+| `keywords` | TEXT[] | 研究关键词列表 |
+| `researchmap_url` | TEXT | researchmap.jp 个人页面URL |
+| `lab_url` | TEXT | 研究室官网URL（DuckDuckGo搜索获取） |
+| `profile_updated` | TEXT | researchmap.jp 上的更新日期 |
+| `updated_at` | TIMESTAMPTZ | 本系统最后更新时间 |
+
+### 爬取流程
+
+#### Step 1：教员基本信息爬取（`crawl_professors.py`）
+
+```
+[初始化 Selenium ChromeDriver]
+    │
+    ▼
+[collect_urls] — researchmap.jp/researchers?q=<大学名>&page=N
+    │  逐页抓取，直到新URL=0为止（最多200页）
+    │  过滤条件：URL格式匹配 + 排除/researchers/new_accounts/auth
+    ▼
+[逐URL访问个人页] — driver.get(researchmap_url)
+    │  提取：氏名(h1) / カナ・英語名 / 所属・職位 / 研究キーワード / 研究分野 / 更新日
+    │  403响应 → 等待30秒后重试（最多3次）
+    │  Session失效 → 重建driver（每200件触发一次）
+    ▼
+[批量 upsert 至 Supabase professor 表]
+    │  BATCH_SIZE = 30
+    │  on_conflict=researchmap_id（幂等性保证）
+    ▼
+[下一所大学]
+```
+
+**职位过滤白名单**：教授・准教授・助教・講師・特任教授・特任准教授・特任講師・特任助教・客員教授・客員准教授・招へい教授・招へい准教授
+
+#### Step 2：研究室URL补全（`crawl_lab_urls.py`）
+
+```
+[读取 professor 表中 lab_url=NULL 的记录]
+    │
+    ▼
+[对每位教员执行 DuckDuckGo 搜索]
+    │  查询模板：
+    │    ①「<大学名> <教員名> 研究室」
+    │    ②「<大学名> <教員名> lab」
+    │    ③「<大学名> <教員名> <研究分野> 研究室」
+    │  scoring规则：
+    │    +10 大学公式ドメイン（u-tokyo.ac.jp等）
+    │    +5  URL含 lab/labo/laboratory/research/group/prof/faculty
+    │    +3  .ac.jp
+    │    +2  URL深度≥4层
+    │  阈值：score≥10 → 立即采用；score≥3 → 备选
+    ▼
+[PATCH professor 表，写入 lab_url]
+    │  每2秒间隔（DDG限流对策）
+    │  每50件输出一次进度统计
+```
+
+**除外URL规则**：researchmap.jp / kaken.nii.ac.jp / jglobal.jst.go.jp / scholar.google / ci.nii.ac.jp / wikipedia / linkedin / twitter / facebook / top-researchers.com / lab-search.com / 就职信息站点（mynavi/rikunabi/benesse等）
+
+### 当前进度（截至2026-07）
+
+| 步骤 | 状态 | 数据量 | 说明 |
+|------|------|--------|------|
+| **Step 1：教员信息爬取** | 🔄 进行中 | ~190件已入库 | researchmap.jp 爬取中，东京大学（2250条URL）、京都大学（1107条URL）已完成URL收集，正在逐页抓取详情 |
+| **Step 2：研究室URL补全** | 📋 待启动 | 0件 | crawl_lab_urls.log为空，尚未运行 |
+
+**各大学爬取进度**（researchmap.jp 搜索「総件数」仅为平台显示的注册研究者总数，受分页限制实际可收集URL远少于此数）：
+
+| 大学 | 平台総件数 | 实际收集URL数 | 已入库件数 | 状态 |
+|------|-----------|--------------|-----------|------|
+| 東京大学 | 7,860件 | 2,250件（48页） | 合计约190件（含京都，多次中断重启累计） | 🔄 详情爬取中 |
+| 京都大学 | 8,028件 | 1,107件（24页） | ↑ 同上（无法单独区分） | 🔄 详情爬取中 |
+| 大阪大学 | 未知 | 未收集 | 0件 | 📋 待开始 |
+| 名古屋大学 | 未知 | 未收集 | 0件 | 📋 待开始 |
+| 東北大学 | 未知 | 未收集 | 0件 | 📋 待开始 |
+| 北海道大学 | 未知 | 未收集 | 0件 | 📋 待开始 |
+| 九州大学 | 未知 | 未收集 | 0件 | 📋 待开始 |
+
+### 已知问题与注意事项
+
+| 问题 | 说明 |
+|------|------|
+| **researchmap.jp 访问集中提示** | 频繁访问时返回「アクセスが集中しております」页面，当前脚本会将该响应当作正常数据写入（`name_ja`为错误文本），需后续清洗 |
+| **ChromeDriver Session 崩溃** | 长时间运行后出现 `invalid session id` 错误，每200件会主动重建driver，但崩溃后需手动重启脚本 |
+| **渲染超时** | 偶发 `Timed out receiving message from renderer`，重试3次后跳过，不影响整体进度 |
+| **ERR_CONNECTION_RESET** | 网络不稳定时触发，重试3次跳过 |
+| **lab_url 品质问题** | 部分URL可能指向PDF文件（非研究室主页）、京大KDB个人档案页等，需后续过滤 |
+| **重复URL问题** | 同一URL可能分配给多位教授（同研究室），属正常现象但需关注 |
+| **「このサイトにアクセスできません」** | researchmap个人页面返回此文本时，被当作有效数据写入，需清洗 |
+
+### 快速命令
+
+```bash
+# 爬取教员基本信息（旧帝大7校）
+python scripts/crawl_professors.py
+
+# 补全研究室URL（lab_url=NULL的记录）
+python scripts/crawl_lab_urls.py
+
+# 查看数据质量报告
+python check_lab_url_quality.py
+
+# 抽样查看lab_url结果
+python check_lab_url_sample.py
+```
+
+---
+
+## 10. 当前进度与待办事项
 
 ### ✅ 已完成
 - [x] 第一阶段强规则爬虫（run_single + run_batch）
@@ -548,8 +698,11 @@ PDF バイト列
 #### Phase 4 主体实装
 - [x] **Phase 4A スクリプト生成**：`scripts/phase4a_extract_fulltext.py`
 - [ ] **Phase 4A 実行中**：🔄 バックグラウンド実行中（対象1340件、pdfplumber全文抽出 → crawled_pdfs.full_text）
-- [ ] **Phase 4A.5**：`scripts/phase4a5_structured_extract.py` — **未実装** full_text全文からLLM構造化抽出（Map-Reduce方式、截断なし）→ crawled_pdfs.structured_data
-- [ ] **Phase 4B**：`scripts/phase4b_chunking.py` — Chunking + structured_data を各chunkのcontextに付加 → pdf_chunks表
+- [x] **Phase 4A.5 実験完了**：`scripts/phase4a5_structured_extract.py` — FULLTEXTモード、10大学84件処理、444 exam_types抽出、crawled_pdfs.structured_data保存完了
+- [x] **Phase 4B 実験完了**：`scripts/phase4b_chunking.py` — 見出し境界分割+強制截断、4,159 chunks生成（最大900字・平均660字）
+- [x] **Phase 4C 実験完了**：`scripts/phase4c_embedding.py` — Cohere embed-multilingual-v3、Qdrant Cloudに4,159 points保存完了
+- [x] **Phase 4D 実験完了**：`scripts/phase4d_retrieval.py` — RAG検索・回答生成、50問バッチテスト完了（平均score 0.8158、成功率100%）
+- [ ] **Phase 4E 全国展開**：10大学→全国展開（Phase 4A〜4D を全大学に適用）
 - [ ] **Phase 4C**：`scripts/phase4c_embedding.py` — cohere.embed-multilingual-v3 → Qdrant Cloud
 - [ ] **Phase 4D**：`src/pipeline/phase4/retrieval_pipeline.py` — Qdrant検索 + BM25 + Rerank + LLM回答生成
 
@@ -570,7 +723,7 @@ PDF バイト列
 
 ---
 
-## 10. 已知问题与注意事项
+## 11. 已知问题与注意事项
 
 ### 环境配置
 - 需要在项目根目录创建 `.env` 文件，包含以下变量：
@@ -605,7 +758,7 @@ PDF バイト列
 
 ---
 
-## 11. 快速启动命令速查
+## 12. 快速启动命令速查
 
 ### 第三阶段（当前主线）
 
@@ -650,7 +803,7 @@ python run_batch.py --types national public
 
 ---
 
-## 12. 更新日志
+## 13. 更新日志
 
 | 日期 | 更新内容 |
 |------|----------|
@@ -665,5 +818,11 @@ python run_batch.py --types national public
 | 2026-06 | **Phase 4 设计最终确定**：①数据库方案：crawled_pdfs表新增9个字段（含full_text/structured_data）+ 新建pdf_chunks表；②向量存储改用Qdrant Cloud（不用Supabase pgvector）；③处理方案：分层架构（pdfplumber全文提取 + LLM视觉扫描PDF），成本约$5~15；④前置清洗分3步；⑤新增Phase 4A.5（全文structured_data抽取）；⑥chunk策略确定：先全文抽取structured_data→再chunk→将structured_data附着每个chunk提升embedding语义质量。 |
 | 2026-06 | **Phase 4 前置清洗全部完成**：Step1过滤54件无关文档（含jfm.go.jp等）；Step2修正1320件年度（令和7~9年度为主）；Step3为1328件打doc_type/exam_types标签（募集要項78%・選抜要項13%）。schema_phase4.sql已在Supabase执行，数据库变更完成。 |
 | 2026-06 | **Phase 4A 开始执行**：PDF全文结构化抽取（pdfplumber text+extract_tables，全页面不截断）在后台运行，对象1340件，结果存入crawled_pdfs.full_text。**Phase 4A.5设计确定**：全文Map-Reduce结构化抽取策略（出願期間/試験科目/配点/定員/出願資格等）→ structured_data JSONB字段；chunk时将structured_data摘要附着到每个chunk的context中，显著提升RAG检索精度。 |
+| 2026-07 | **Phase 4A.5 実験完了（10大学）**：当初設計のMap-Reduce方式からFULLTEXT（全文一括）方式に変更。Claude Sonnet 4の200K context windowを活用、max_tokens=8192で出力截断を防止。実験10国立大学91件（有効84件）処理、75件成功（82%）、合計444 exam_types抽出。旧截取方式比でexam_types+79%・日程情報充填率が大幅改善。9件の失敗はエネルギー報告・教員紹介等の非募集要項文書で正当スキップ。crawled_pdfs.structured_dataに保存完了。次フェーズ：Phase 4B Chunking実装開始。 |
+| 2026-07 | **Phase 4B 実験完了（10大学）**：見出し正規表現パターンによるセクション分割＋強制字数截断（900字上限）実装。91件PDF処理（7件57字スキップ）、4,159 chunks生成。最大900字・平均660字・最小80字と適切サイズ。structured_dataから生成したchunk_context（大学名・入試方式・定員・出願期間）を各chunkに付与。pdf_chunksテーブルに保存完了。 |
+| 2026-07 | **Phase 4C 実験完了（10大学）**：Cohere embed-multilingual-v3（Vortex外部ゲートウェイ経由）でEmbedding実施。API形式はinput+input_typeのOpenAI互換形式が正解（textsのみや内部K8sアドレスは不可）。4,159件全件成功・0件失敗。Qdrant Cloud pdf_chunksコレクション（1024次元Cosine）に全points保存完了。Phase 4A〜4C実験完了、RAGパイプラインのデータ準備が整った。次：Phase 4D 検索・回答生成実装。 |
+| 2026-07 | **Phase 4D 実験完了（10大学）**：RAG検索・回答生成パイプライン実装完了。①Query Understanding（LLMで大学名・年度・入試方式を自動抽出）②Qdrant ベクトル検索（Cohere同一モデルでクエリembedding、payloadフィルタ）③LLM回答生成（出典URL付き）の3ステップ構成。SSL証明書問題をrequestsベース直接呼び出しで解決。Qdrant payload chunk_text を500字→900字に拡大（全件再embed済み）。検索品質：score 0.86~0.88（北見工業大学推薦定員95名を正確に回答）。課題：大阪大学等の複数研究科混在PDFでは学部情報のヒット精度が低い。 |
+| 2026-07 | **Phase 4D バッチテスト完了（50問）**：10大学×5問=50問のRAGバッチテスト実施。成功率100%・エラー0件。平均score 0.8158（高精度≥0.85:22%、中精度0.75~:68%、低精度:10%）。大学別トップ：旭川医科大学0.8718、北見工業大学0.8512。課題：大阪大学(0.7546)・横浜国立大学(0.7703)はPDF内容混在（大学院・法科大学院・学部が混在）により学部入試チャンクがヒットしにくい。CIDフォント文字化けchunkが一部回答品質に影響。結果CSV：results/phase4d_test_20260618_162152.csv。次：全国展開準備。 |
+| 2026-07 | **第五阶段启动：旧帝大7校教员信息爬取**：新增 `scripts/crawl_professors.py`（Selenium + researchmap.jp）和 `scripts/crawl_lab_urls.py`（DuckDuckGo搜索研究室URL）。Supabase 新建 `professor` 表，含researchmap_id/姓名/所属/职位/研究分野/关键词/lab_url等字段。当前已爬取约190件（東京大学90件+京都大学100件），东京大学URL收集2250条、京都大学1107条，Step1详情爬取进行中。Step2（研究室URL补全）尚未启动。主要问题：访问集中提示/ChromeDriver崩溃/渲染超时需重启脚本继续。 |
 
 > **维护提示**：每次完成一个子任务或发现重要问题，请在此表格追加一行记录，并同步更新第 8 节的进度列表。
