@@ -2,7 +2,7 @@
 
 > **用途**：本文档面向 AI Agent（或新加入的开发者），用于在每次新 Session 开始时快速恢复项目上下文。  
 > **维护原则**：每次有功能变更、调试结论、阶段推进时，请同步更新本文档对应章节。  
-> **最后更新**：2026-07（新增第五阶段：教授信息 & 研究室URL爬取）
+> **最后更新**：2026-07（新增第六阶段：Web 前端 Nyushi Navi 开发进度）
 
 ---
 
@@ -17,10 +17,11 @@
 7. [第三阶段：Ground Truth 驱动爬取（当前主线）](#7-第三阶段ground-truth-驱动爬取当前主线)
 8. [第四阶段：RAG データ準備（計画中）](#8-第四阶段rag-データ準備計画中)
 9. [第五阶段：教授信息 & 研究室URL爬取](#9-第五阶段教授信息--研究室url爬取)
-10. [当前进度与待办事项](#10-当前进度与待办事项)
-11. [已知问题与注意事项](#11-已知问题与注意事项)
-12. [快速启动命令速查](#12-快速启动命令速查)
-13. [更新日志](#13-更新日志)
+10. [第六阶段：Web 前端 Nyushi Navi](#10-第六阶段web-前端-nyushi-navi)
+11. [当前进度与待办事项](#11-当前进度与待办事项)
+12. [已知问题与注意事项](#12-已知问题与注意事项)
+13. [快速启动命令速查](#13-快速启动命令速查)
+14. [更新日志](#14-更新日志)
 
 ---
 
@@ -660,7 +661,144 @@ python check_lab_url_sample.py
 
 ---
 
-## 10. 当前进度与待办事项
+---
+
+## 10. 第六阶段：Web 前端 Nyushi Navi
+
+### 状态：🔄 开发中
+
+### 技术栈
+
+| 类别 | 技术 |
+|------|------|
+| 框架 | Next.js 14 (App Router, Turbopack) |
+| 语言 | TypeScript |
+| 样式 | CSS Variables + 原生 CSS |
+| 数据库 | Supabase (PostgreSQL) |
+| 向量搜索 | Qdrant Cloud |
+| AI 对话 | OpenAI / Anthropic / Google / xAI / 本地 |
+| 部署 | Vercel |
+
+### 页面路由结构
+
+```
+/                                                           # 首页：大学一览表
+/university/[name]                                          # 大学详情页
+/university/[name]/department/[dept]/professors             # 教員一览页
+/university/[name]/department/[dept]/professors/[id]        # 教授详细页
+/api/chat                                                   # AI 对话 API
+/api/chat/verify                                            # API Key 验证
+/api/scholar                                                # Google Scholar API
+/api/debug/qdrant                                           # Qdrant 调试
+```
+
+### 已完成功能
+
+#### 🏠 首页 (`/`)
+- [x] 大学一览表（1000+ 所大学）
+- [x] 多列排序（偏差値・QS・THE・ARWU），默认按 QS 升序
+- [x] 搜索框（大学名検索，限制宽度 320px）
+- [x] 4 个下拉菜单过滤器（設置区分・地域・学校類型・人気），一行横排
+- [x] 过滤器一键リセットボタン
+- [x] 表格列：序号、大学名、区分、地域、偏差値、QS、THE、ARWU、最終収集日、公式サイト（🔗）、Wikipedia（📖）
+- [x] 公式サイト・Wikipedia 分列独立显示
+- [x] 有排名/无排名分组显示
+- [x] 国際化（日本語・中文・English）
+
+#### 🏛️ 大学详情页 (`/university/[name]`)
+- [x] パンくずリスト
+- [x] 大学基本情報（偏差值・QS・THE・ARWU・地域・区分）
+- [x] 公式サイト・Wikipedia リンク（独立显示）
+- [x] 学部 / 研究科 タブ切替（URL `?tab=研究科` 参数对应）
+- [x] 各卡片展示专攻列表，`university_units` 无数据时从 `professor` 表补充
+- [x] 两表合并去重，以 `university_units` 为权威数据源
+- [x] 专攻行内「教員情報」「入試情報」按钮
+- [x] 专攻10件超展开按钮
+- [x] Suspense 包裹（useSearchParams 対応）
+
+#### 👨‍🏫 教員一览页 (`/.../professors`)
+- [x] 完整 Breadcrumb（全部可点击，研究科クリックで `?tab=研究科` 跳转）
+- [x] 专攻过滤器（下拉菜单，URL `?senkou=xxx` 自动选中）
+- [x] 职位过滤器（下拉菜单）
+- [x] フリーテキスト検索（氏名・キーワード・研究分野・所属）
+- [x] `senkou_name` 为空的教员从 `affiliation` 字段推测专攻（`guessSenkouFromAffiliation`）
+- [x] 专攻列表 = `university_units` + `professor` 表合并，全专攻覆盖
+- [x] 专攻名正规化：去掉研究科名前缀、去掉 (兼担) 等括号前缀（`cleanSenkou`）
+- [x] 卡片点击跳转教授详细页
+- [x] 国際化对应（すべて/All/全部）
+
+#### 👤 教授详细页 (`/.../professors/[id]`)
+- [x] 完整 Breadcrumb
+- [x] 프로フィールヘッダー（氏名日英・カナ・職位バッジ・所属）
+- [x] 外部リンク：researchmap・研究室サイト・メール送信（`mailto:` 件名自动填入）
+- [x] 研究分野タグ・キーワードタグ・所属詳細
+- [x] Google Scholar 引用情報（総引用数・h指標・i10指標・論文一覧）
+  - SerpAPI キーあり → 自動取得
+  - SerpAPI キーなし → Google Scholar 検索リンクにフォールバック
+- [x] 研究室情報モジュール（準備中：メンバー・男女比・国籍・研究経費）
+- [x] **同じ研究分野の他大学教員** 横断比較ブロック（最大8人，可点击跳转）
+
+#### 📋 入試情報ページ (`/.../admission`)
+- [x] 完整 Breadcrumb
+- [x] 試験時期フィルター（夏季 / 冬季 / 春季 / その他）
+- [x] 試験種別タブ（一般入試 / 留学生入試 / 社会人入試 / 推薦入試 等、季節ブロック内で切替）
+- [x] サマリー行（出願期間・試験日・合格発表・募集人員・出願料）
+- [x] 詳細展開（出願方法・提出書類・試験科目・英語要件・事前連絡・出願資格・備考）
+- [x] 参照PDF一覧
+- [x] **データなし時も全モジュール表示**（空状態フレーム + Google検索フォールバック）
+  - 夏季・冬季の空ブロックを常時表示
+  - 一般入試/留学生入試タブ切替可能
+  - 各モジュール（出願・試験・選考結果・事前連絡）を「— — —」で表示
+- [x] ジャンプ元：大学詳細ページ専攻行・Sidebar（外部boshu_linksから内部ルートへ移行）
+- [x] crawled_pdfs.structured_data.exam_types を利用（Phase 4A.5 処理済みデータ）
+
+#### 🤖 AI チャットウィジェット
+- [x] 右侧固定展开（360px，从 topbar 下方开始）
+- [x] 关闭按钮已去除（常时展开）
+- [x] 多 LLM 提供商支持（本地・OpenAI・Claude・Gemini・Grok）
+- [x] API Key 验证・会话历史（Supabase 保存）
+- [x] ストリーミングレスポンス・フィードバック機能
+- [x] RAG 検索 + Web フォールバック・Agent モード
+
+#### 🗂️ 左侧边栏导航
+- [x] VSCode 风树形结构
+- [x] 点击大学名动态加载学部・研究科数据
+- [x] 学部/研究科グループ展开折叠，各专攻有「教員情報」「入試情報」按钮（纵向排列）
+- [x] 入試情報リンク从 `boshu_links` 表自动获取
+- [x] 宽度可拖拽调整（初始 240px，范围 160~480px）
+- [x] 当前页面高亮
+
+#### 🌐 共通布局
+- [x] Topbar（ロゴ・ナビ・言語切替，z-index 10002 覆盖 AI 面板）
+- [x] 主内容区 margin-right: 360px（不被 AI 面板遮挡）
+- [x] フッター同样设置 margin-right
+- [x] ダークモード CSS 変数対応・スケルトンローディング・フェードインアニメーション
+
+### 未実装・準備中
+
+| 功能 | 优先度 | 说明 |
+|------|--------|------|
+| 研究室メンバー・男女比・国籍分布・研究経費 | 高 | 需研究室主页爬虫数据 |
+| 入試情報ページ データ充実 | 中 | Phase 4A.5 全大学展開後に自動充実 |
+| `email` フィールド補完 | 中 | 从 researchmap / 研究室主页获取 |
+| Google Scholar プロフィール ID 紐付け | 中 | 需 SerpAPI Key |
+| SEO 最適化（教授・大学詳細ページ） | 中 | — |
+| モバイル対応（レスポンシブ改善） | 低 | — |
+
+### 已知技术问题
+
+| 问题 | 解决状态 |
+|------|----------|
+| `professor.senkou_name` 与 `university_units.sub_unit_name` 不一致 | ✅ `cleanSenkou` + `guessSenkouFromAffiliation` 双重匹配 |
+| Sidebar `'use client'` 文字化け | ✅ Node.js 脚本修复 |
+| `useSearchParams` 在 App Router 中需 Suspense | ✅ 全页面添加 Suspense 包裹 |
+| AI 面板覆盖 topbar 语言切换下拉 | ✅ topbar z-index 提升至 10002 |
+| 专攻过滤只显示13个（工学系18个） | ✅ 合并 university_units + professor 两表数据 |
+| 入試情報ページ データなし時に空白表示 | ✅ EmptySeasonBlock + EmptyExamCard で全モジュール常時表示 |
+
+---
+
+## 11. 当前进度与待办事项
 
 ### ✅ 已完成
 - [x] 第一阶段强规则爬虫（run_single + run_batch）
@@ -723,7 +861,7 @@ python check_lab_url_sample.py
 
 ---
 
-## 11. 已知问题与注意事项
+## 12. 已知问题与注意事项
 
 ### 环境配置
 - 需要在项目根目录创建 `.env` 文件，包含以下变量：
@@ -758,7 +896,7 @@ python check_lab_url_sample.py
 
 ---
 
-## 12. 快速启动命令速查
+## 13. 快速启动命令速查
 
 ### 第三阶段（当前主线）
 
@@ -803,7 +941,7 @@ python run_batch.py --types national public
 
 ---
 
-## 13. 更新日志
+## 14. 更新日志
 
 | 日期 | 更新内容 |
 |------|----------|
@@ -824,5 +962,7 @@ python run_batch.py --types national public
 | 2026-07 | **Phase 4D 実験完了（10大学）**：RAG検索・回答生成パイプライン実装完了。①Query Understanding（LLMで大学名・年度・入試方式を自動抽出）②Qdrant ベクトル検索（Cohere同一モデルでクエリembedding、payloadフィルタ）③LLM回答生成（出典URL付き）の3ステップ構成。SSL証明書問題をrequestsベース直接呼び出しで解決。Qdrant payload chunk_text を500字→900字に拡大（全件再embed済み）。検索品質：score 0.86~0.88（北見工業大学推薦定員95名を正確に回答）。課題：大阪大学等の複数研究科混在PDFでは学部情報のヒット精度が低い。 |
 | 2026-07 | **Phase 4D バッチテスト完了（50問）**：10大学×5問=50問のRAGバッチテスト実施。成功率100%・エラー0件。平均score 0.8158（高精度≥0.85:22%、中精度0.75~:68%、低精度:10%）。大学別トップ：旭川医科大学0.8718、北見工業大学0.8512。課題：大阪大学(0.7546)・横浜国立大学(0.7703)はPDF内容混在（大学院・法科大学院・学部が混在）により学部入試チャンクがヒットしにくい。CIDフォント文字化けchunkが一部回答品質に影響。結果CSV：results/phase4d_test_20260618_162152.csv。次：全国展開準備。 |
 | 2026-07 | **第五阶段启动：旧帝大7校教员信息爬取**：新增 `scripts/crawl_professors.py`（Selenium + researchmap.jp）和 `scripts/crawl_lab_urls.py`（DuckDuckGo搜索研究室URL）。Supabase 新建 `professor` 表，含researchmap_id/姓名/所属/职位/研究分野/关键词/lab_url等字段。当前已爬取约190件（東京大学90件+京都大学100件），东京大学URL收集2250条、京都大学1107条，Step1详情爬取进行中。Step2（研究室URL补全）尚未启动。主要问题：访问集中提示/ChromeDriver崩溃/渲染超时需重启脚本继续。 |
+| 2026-07 | **入試情報ページ新規作成**：/university/[name]/department/[dept]/admission ルート追加。crawled_pdfs.structured_data を利用して試験時期（夏季/冬季/春季）× 試験種別のタブ切替UIを実装。データなし時も全モジュールを空状態フレームで常時表示。大学詳細ページ・Sidebarの「入試情報」ボタンから内部ページへ遷移するよう変更。 |
+| 2026-07 | **第六阶段：Web 前端 Nyushi Navi 开发**：基于 Next.js 14 App Router + Supabase 构建前端。完成首页大学一览（排序/过滤/搜索）、大学详情页（学部/研究科タブ）、教員一览页（专攻/职位过滤器、下拉菜单形式）、教授详细页（Google Scholar 引用/同分野他大学教員比较块）、AI 聊天侧边栏（固定右展开 360px）、VSCode 风左侧导航（动态树形、可拖拽调整宽度）。主要技术难点：专攻名正规化（`cleanSenkou` + `guessSenkouFromAffiliation`）、Supabase 两表数据合并、useSearchParams Suspense 包裹、topbar z-index 层级管理。详细进度见第十节。 |
 
 > **维护提示**：每次完成一个子任务或发现重要问题，请在此表格追加一行记录，并同步更新第 8 节的进度列表。
